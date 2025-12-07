@@ -1,0 +1,23 @@
+{
+  "date": "2025-12-07",
+  "commit": "19050cf",
+  "run": "overnight-200-iterations",
+  "config": {
+    "iterations": 200,
+    "parallel_evaluations": 3,
+    "sample_queries": 0
+  },
+  "metrics": {
+    "precision_at_k": 0.06407766990291262,
+    "recall_at_k": 0.19554393826238486,
+    "ndcg_at_k": 0.18277217446995597,
+    "reciprocal_rank": 0.284646150289745,
+    "mean_average_precision": 0.14694078058224733,
+    "mean_reciprocal_rank": 0.284646150289745,
+    "k": 10,
+    "queries": 103,
+    "combined_score": 0.1747961427014492,
+    "error": 0.0
+  },
+  "notes": "Best program from overnight OpenEvolve run; kernel changes merged into src/ranking_evolved/bm25.py."
+}

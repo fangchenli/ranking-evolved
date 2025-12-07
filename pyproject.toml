@@ -23,3 +23,6 @@ dev = [
     "pytest>=8.4.1",
     "ruff>=0.12.1",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
