@@ -2,7 +2,7 @@ max_iterations: 60
 log_level: "INFO"
 random_seed: 42
 diff_based_evolution: true
-max_iterations: 80
+max_iterations: 200
 
 llm:
   models:
@@ -45,7 +45,7 @@ evaluator:
   timeout: 180
   max_retries: 1
   cascade_evaluation: false
-  parallel_evaluations: 2
+  parallel_evaluations: 3
 
 evolution_trace:
   enabled: true

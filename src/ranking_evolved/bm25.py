@@ -104,13 +104,13 @@ class Corpus:
         Inverse document frequency (IDF) for each term.
 
         Formula:
-            idf(t) = log((N + 1) / (df(t) + 1))
+            idf(t) = log((N + 1) / (df(t) + epsilon))
 
         Returns:
             dict[str, float]: Mapping from term to IDF value.
         """
         df_values = np.array(list(self.document_frequency.values()))
-        idf = np.log((self.document_count + 1) / (df_values + 1))
+        idf = np.log((self.document_count + 1) / (df_values + 1e-5))
         return {
             term: idf_value
             for term, idf_value in zip(self.document_frequency.keys(), idf)
@@ -157,16 +157,16 @@ class BM25:
         if np.all(frequency_list == 0):
             return 0.0
 
-        # Floor IDF to avoid zeros and dampen TF with a log factor to reduce dominance of repeats.
+        # Floor IDF to avoid zeros and dampen TF via saturation to reduce dominance of repeats.
         idf_values = np.maximum(
             np.array([idf.get(term, 0.0) for term in query]), 1e-10
         )
-        tf_factor = 1.0 + np.log1p(frequency_list)
+        tf_factor = frequency_list / (frequency_list + k1 + 1)
         numerator = frequency_list * (k1 + 1)
         denominator = frequency_list + k1 * (
-            1 - b + b * document_length / avg_doc_length
+            1 - b + b * document_length / (avg_doc_length + 1e-5)
         )
-        scores = idf_values * tf_factor * (numerator / denominator)
+        scores = idf_values * tf_factor * (numerator / np.maximum(denominator, 1e-10))
         return float(np.sum(scores))
 
     def score(self, query: list[str], index: int) -> float:
