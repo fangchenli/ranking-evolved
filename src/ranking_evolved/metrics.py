@@ -112,3 +112,43 @@ def ndcg_at_k(relevant: np.ndarray, retrieved: np.ndarray, k: int) -> float:
     idcg = np.sum(np.array(ideal_gains) / np.array(discounts))
 
     return dcg / idcg if idcg > 0 else 0.0
+
+
+def reciprocal_rank(relevant: np.ndarray, retrieved: np.ndarray) -> float:
+    """
+    Computes Reciprocal Rank (RR) for a single query.
+
+    Args:
+        relevant: 1D array of relevant document indices.
+        retrieved: 1D array of ranked document indices.
+
+    Returns:
+        Reciprocal rank of the first relevant document (0.0 if none are retrieved).
+    """
+    relevant_set = set(relevant.tolist())
+    for i, doc_id in enumerate(retrieved, start=1):
+        if doc_id in relevant_set:
+            return 1.0 / i
+    return 0.0
+
+
+def mean_reciprocal_rank(
+    all_relevant: list[np.ndarray], all_retrieved: list[np.ndarray]
+) -> float:
+    """
+    Computes Mean Reciprocal Rank (MRR) over multiple queries.
+
+    Args:
+        all_relevant: List of 1D arrays of relevant document indices.
+        all_retrieved: List of 1D arrays of ranked document indices.
+
+    Returns:
+        Mean reciprocal rank score.
+    """
+    if not all_relevant:
+        return 0.0
+
+    rr_scores = [
+        reciprocal_rank(rel, ret) for rel, ret in zip(all_relevant, all_retrieved)
+    ]
+    return float(np.mean(rr_scores))
