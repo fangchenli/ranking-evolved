@@ -41,3 +41,23 @@ Previous kernel (2025-12-06 run):
 - 2025-12-06 (commit around 19050cf): OpenEvolve run (80 iterations, smoothed IDF + tf log damping integrated) produced best combined ~0.1506 on full BRIGHT biology (precision@10 ~0.0515, recall@10 ~0.1644, NDCG@10 ~0.1547, MAP ~0.1297, MRR ~0.2526). Updated `src/ranking_evolved/bm25.py` with those kernel tweaks (removed self-normalization).
 - 2025-12-07 (commit 19050cf+): Overnight OpenEvolve run (200 iterations, tf saturation + tighter IDF smoothing) yielded combined ~0.1748 on full BRIGHT biology (precision@10 ~0.0641, recall@10 ~0.1955, NDCG@10 ~0.1828, MAP ~0.1469, MRR ~0.2846). `src/ranking_evolved/bm25.py` now uses the smoothed IDF (ε≈1e-5) and tf saturation factor.
 - 2025-12-07 later: Best in-run candidate (iteration 113, ID 7cc8c383…) re-evaluated at combined ~0.2095 on full BRIGHT biology (precision@10 ~0.0796, recall@10 ~0.2548, NDCG@10 ~0.2219, MAP ~0.1724, MRR ~0.3188). This kernel (clipped IDF, unique query terms, log-damped TF saturation) is integrated into `src/ranking_evolved/bm25.py`.
+
+## Full BRIGHT evaluation (current bm25.py, k=10, full queries)
+
+| Split | Combined | Prec@10 | Rec@10 | nDCG@10 | MAP | MRR | Queries |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| biology | 0.2095 | 0.0796 | 0.2548 | 0.2219 | 0.1724 | 0.3188 | 103 |
+| earth_science | 0.2790 | 0.1086 | 0.2999 | 0.2963 | 0.2483 | 0.4421 | 116 |
+| economics | 0.1097 | 0.0534 | 0.1362 | 0.1155 | 0.0886 | 0.1549 | 103 |
+| psychology | 0.0756 | 0.0337 | 0.0980 | 0.0749 | 0.0633 | 0.1080 | 101 |
+| robotics | 0.1054 | 0.0426 | 0.1440 | 0.1063 | 0.0842 | 0.1499 | 101 |
+| stackoverflow | 0.1622 | 0.0752 | 0.1909 | 0.1727 | 0.1474 | 0.2248 | 117 |
+| sustainable_living | 0.1149 | 0.0463 | 0.1568 | 0.1194 | 0.0980 | 0.1542 | 108 |
+| pony | 0.1802 | 0.1759 | 0.0917 | 0.1774 | 0.1067 | 0.3491 | 112 |
+| aops | 0.0229 | 0.0135 | 0.0265 | 0.0191 | 0.0130 | 0.0422 | 111 |
+| theoremqa_theorems | 0.0459 | 0.0118 | 0.0592 | 0.0472 | 0.0367 | 0.0744 | 76 |
+| theoremqa_questions | 0.0532 | 0.0175 | 0.0872 | 0.0551 | 0.0483 | 0.0580 | 194 |
+| leetcode | 0.1206 | 0.0430 | 0.2080 | 0.1267 | 0.0957 | 0.1295 | 142 |
+| **macro avg** | **0.1233** | **0.0584** | **0.1461** | **0.1277** | **0.1002** | **0.1838** | — |
+
+Macro combined (all splits): ~0.1233. Low performers: aops, theoremqa_*; consider targeted tuning.

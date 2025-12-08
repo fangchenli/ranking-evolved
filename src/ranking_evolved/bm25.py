@@ -139,16 +139,18 @@ class BM25:
         self.k1 = k1
         self.b = b
         self.corpus = corpus
+        # Precompute document normalization factors to avoid recomputing per score call.
+        dl = self.corpus.document_length.astype(np.float32)
+        avg_dl = float(self.corpus.average_document_length)
+        self._doc_norm = 1.0 - b + b * (dl / (avg_dl + 1e-9))
 
     @staticmethod
     def score_kernel(
         query: list[str],
-        document_length: int,
+        norm: float,
         frequencies: Counter,
         idf: dict[str, float],
         k1: float,
-        b: float,
-        avg_doc_length: float,
     ) -> float:
         """
         Computes BM25 score for a single document and query.
@@ -170,8 +172,6 @@ class BM25:
 
         idf_values = np.array([idf.get(term, 0.0) for term in terms], dtype=float)
 
-        dl_norm = document_length / (avg_doc_length + 1e-9)
-        norm = 1.0 - b + b * dl_norm
         denom = tf + k1 * norm
 
         # BM25 TF with stronger saturation and mild log damping to avoid runaway boosts.
@@ -181,17 +181,13 @@ class BM25:
         return float(scores.sum())
 
     def score(self, query: list[str], index: int) -> float:
-        doc_len = self.corpus.document_length[index]
-
         frequencies = self.corpus.term_frequency[index]
         return self.score_kernel(
             query,
-            doc_len,
+            float(self._doc_norm[index]),
             frequencies,
             self.corpus.inverse_document_frequency,
             self.k1,
-            self.b,
-            self.corpus.average_document_length,
         )
 
     def rank(
