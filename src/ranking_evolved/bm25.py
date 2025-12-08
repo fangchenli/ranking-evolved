@@ -103,14 +103,17 @@ class Corpus:
         """
         Inverse document frequency (IDF) for each term.
 
-        Formula:
-            idf(t) = log((N + 1) / (df(t) + epsilon))
+        Use a compact, non-negative BM25-style IDF with clipping to
+        prevent ultra-rare terms from dominating:
+
+            idf(t) = min(8, max(0, log((N + 0.5) / (df(t) + 0.5))))
 
         Returns:
-            dict[str, float]: Mapping from term to IDF value.
+            dict[str, float]: Mapping from term to clipped IDF value.
         """
         df_values = np.array(list(self.document_frequency.values()))
-        idf = np.log((self.document_count + 1) / (df_values + 1e-5))
+        idf = np.log((self.document_count + 0.5) / (df_values + 0.5))
+        idf = np.minimum(np.maximum(idf, 0.0), 8.0)
         return {
             term: idf_value
             for term, idf_value in zip(self.document_frequency.keys(), idf)
@@ -153,21 +156,29 @@ class BM25:
         Returns:
             float: Score of the document for the given query.
         """
-        frequency_list = np.array([frequencies.get(term, 0) for term in query])
-        if np.all(frequency_list == 0):
+        if not query:
             return 0.0
 
-        # Floor IDF to avoid zeros and dampen TF via saturation to reduce dominance of repeats.
-        idf_values = np.maximum(
-            np.array([idf.get(term, 0.0) for term in query]), 1e-10
-        )
-        tf_factor = frequency_list / (frequency_list + k1 + 1)
-        numerator = frequency_list * (k1 + 1)
-        denominator = frequency_list + k1 * (
-            1 - b + b * document_length / (avg_doc_length + 1e-5)
-        )
-        scores = idf_values * tf_factor * (numerator / np.maximum(denominator, 1e-10))
-        return float(np.sum(scores))
+        # Order-preserving unique query terms to emphasize distinct concepts.
+        terms = list(dict.fromkeys(query))
+        if not terms:
+            return 0.0
+
+        tf = np.array([frequencies.get(term, 0) for term in terms], dtype=float)
+        if np.all(tf == 0):
+            return 0.0
+
+        idf_values = np.array([idf.get(term, 0.0) for term in terms], dtype=float)
+
+        dl_norm = document_length / (avg_doc_length + 1e-9)
+        norm = 1.0 - b + b * dl_norm
+        denom = tf + k1 * norm
+
+        # BM25 TF with stronger saturation and mild log damping to avoid runaway boosts.
+        tf_raw = (tf * (k1 + 1.0)) / np.maximum(denom, 1e-9)
+        tf_sat = tf / (tf + k1 + 0.5)
+        scores = idf_values * np.log1p(tf_raw * tf_sat)
+        return float(scores.sum())
 
     def score(self, query: list[str], index: int) -> float:
         doc_len = self.corpus.document_length[index]

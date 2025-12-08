@@ -1,13 +1,16 @@
 """
-Evaluator for BM25 variants on the BRIGHT biology split.
+Evaluator for BM25 variants on BRIGHT.
 
 Implements the evaluate(program_path) entrypoint expected by OpenEvolve, using
 all metrics from ranking_evolved.metrics (precision/recall@k, AP/MAP, NDCG, and MRR).
+Supports optional query subsampling via BRIGHT_SAMPLE_QUERIES/BRIGHT_SAMPLE_SEED env vars,
+and a --domain flag (or BRIGHT_DOMAIN env) to select a split or run across all splits.
 """
 
 import argparse
 import importlib.util
 import json
+import os
 import random
 from functools import lru_cache
 from typing import Callable, Tuple
@@ -25,6 +28,21 @@ from ranking_evolved.metrics import (
     reciprocal_rank,
 )
 from ranking_evolved.bm25 import Corpus
+
+BRIGHT_SPLITS = [
+    "biology",
+    "earth_science",
+    "economics",
+    "psychology",
+    "robotics",
+    "stackoverflow",
+    "sustainable_living",
+    "pony",
+    "leetcode",
+    "aops",
+    "theoremqa_theorems",
+    "theoremqa_questions",
+]
 
 
 def _load_candidate(program_path: str) -> Tuple[type, Callable[[str], list[str]]]:
@@ -45,10 +63,10 @@ def _load_candidate(program_path: str) -> Tuple[type, Callable[[str], list[str]]
 
 
 @lru_cache(maxsize=1)
-def _bright_biology() -> tuple[Corpus, list[str], list[list[int]]]:
-    """Load BRIGHT biology documents, queries, and gold doc IDs."""
-    documents = load_dataset("xlangai/BRIGHT", "documents", split="biology")
-    examples = load_dataset("xlangai/BRIGHT", "examples", split="biology")
+def _bright_split(domain: str) -> tuple[Corpus, list[str], list[list[int]]]:
+    """Load BRIGHT documents, queries, and gold doc IDs for a given domain."""
+    documents = load_dataset("xlangai/BRIGHT", "documents", split=domain)
+    examples = load_dataset("xlangai/BRIGHT", "examples", split=domain)
 
     corpus = Corpus.from_huggingface_dataset(documents)
     queries = [example["query"] for example in examples]
@@ -57,44 +75,65 @@ def _bright_biology() -> tuple[Corpus, list[str], list[list[int]]]:
 
 
 def evaluate(program_path: str, k: int = 10) -> dict[str, float]:
-    """Evaluate a BM25 implementation against BRIGHT biology with multiple metrics."""
-    return evaluate_with_sampling(program_path, k=k, sample_queries=None, seed=42)
+    """
+    Evaluate a BM25 implementation against BRIGHT biology with multiple metrics.
+    Respects env vars:
+      - BRIGHT_SAMPLE_QUERIES: int > 0 to subsample queries for faster evolution
+      - BRIGHT_SAMPLE_SEED: seed for reproducible sampling (defaults to 42)
+      - BRIGHT_DOMAIN: split name (default: biology). Use 'all' to evaluate every split.
+    """
+    env_sample = os.getenv("BRIGHT_SAMPLE_QUERIES")
+    env_seed = os.getenv("BRIGHT_SAMPLE_SEED")
+    env_domain = os.getenv("BRIGHT_DOMAIN")
+
+    sample_queries = int(env_sample) if env_sample and int(env_sample) > 0 else None
+    seed = int(env_seed) if env_seed is not None else 42
+    domain = env_domain or "biology"
+
+    return evaluate_with_sampling(
+        program_path, k=k, sample_queries=sample_queries, seed=seed, domain=domain
+    )
 
 
 def evaluate_with_sampling(
-    program_path: str, k: int = 10, sample_queries: int | None = None, seed: int | None = 42
+    program_path: str,
+    k: int = 10,
+    sample_queries: int | None = None,
+    seed: int | None = 42,
+    domain: str = "biology",
 ) -> dict[str, float]:
     """
-    Evaluate a BM25 implementation with optional query subsampling for speed.
+    Evaluate a BM25 implementation with optional query subsampling for speed and domain selection.
 
     Args:
         program_path: Path to the BM25 implementation.
         k: Cutoff for @k metrics.
         sample_queries: If set, randomly sample this many queries (with seed) for evaluation.
         seed: Seed for reproducible sampling.
+        domain: BRIGHT split name (e.g., biology) or "all" to aggregate across splits.
     """
-    corpus, raw_queries, gold_id_lists = _bright_biology()
+    def _eval_single(split: str) -> dict[str, float]:
+        corpus, raw_queries, gold_id_lists = _bright_split(split)
 
-    if sample_queries is not None and sample_queries < len(raw_queries):
-        rng = random.Random(seed)
-        indices = rng.sample(range(len(raw_queries)), sample_queries)
-        raw_queries = [raw_queries[i] for i in indices]
-        gold_id_lists = [gold_id_lists[i] for i in indices]
+        if sample_queries is not None and sample_queries < len(raw_queries):
+            rng = random.Random(seed)
+            indices = rng.sample(range(len(raw_queries)), sample_queries)
+            raw_queries = [raw_queries[i] for i in indices]
+            gold_id_lists = [gold_id_lists[i] for i in indices]
 
-    BM25Impl, tokenize_fn = _load_candidate(program_path)
-    gold_indices = [corpus.id_to_idx(ids) for ids in gold_id_lists]
+        BM25Impl, tokenize_fn = _load_candidate(program_path)
+        gold_indices = [corpus.id_to_idx(ids) for ids in gold_id_lists]
 
-    bm25 = BM25Impl(corpus)
+        bm25 = BM25Impl(corpus)
 
-    all_relevant = []
-    all_retrieved = []
-    precision_scores = []
-    recall_scores = []
-    ndcg_scores = []
-    rr_scores = []
-    ap_scores = []
+        all_relevant = []
+        all_retrieved = []
+        precision_scores = []
+        recall_scores = []
+        ndcg_scores = []
+        rr_scores = []
+        ap_scores = []
 
-    try:
         for raw_query, gold in zip(raw_queries, gold_indices):
             query_tokens = tokenize_fn(raw_query)
             ranked_indices, _ = bm25.rank(query_tokens)
@@ -138,15 +177,37 @@ def evaluate_with_sampling(
         )
         metrics["error"] = 0.0
         return metrics
-    except Exception as exc:  # noqa: BLE001
-        # Penalize failed evaluations but keep the run alive
-        return {
-            "combined_score": 0.0,
-            "error": 1.0,
-            "error_message": str(exc),
-            "k": k,
-            "queries": len(all_relevant),
+
+    if domain == "all":
+        domain_results = {}
+        combined_scores = []
+        macro_accumulators = {
+            "precision_at_k": [],
+            "recall_at_k": [],
+            "ndcg_at_k": [],
+            "mean_average_precision": [],
+            "mean_reciprocal_rank": [],
+            "combined_score": [],
         }
+
+        for split in BRIGHT_SPLITS:
+            metrics = _eval_single(split)
+            domain_results[split] = metrics
+            if metrics.get("error", 1.0) == 0.0:
+                for key in macro_accumulators:
+                    macro_accumulators[key].append(metrics[key])
+
+        macro_metrics = {
+            f"macro_{key}": float(np.mean(values)) if values else 0.0
+            for key, values in macro_accumulators.items()
+        }
+        macro_metrics["domains_evaluated"] = len(domain_results)
+        macro_metrics["combined_score"] = macro_metrics.get("macro_combined_score", 0.0)
+        macro_metrics["domains"] = domain_results
+        macro_metrics["error"] = 0.0
+        return macro_metrics
+
+    return _eval_single(domain)
 
 
 def main() -> None:
@@ -162,11 +223,21 @@ def main() -> None:
     parser.add_argument(
         "--seed", type=int, default=42, help="Random seed for query sampling (default: 42)."
     )
+    parser.add_argument(
+        "--domain",
+        type=str,
+        default="biology",
+        help="BRIGHT split to evaluate (e.g., biology). Use 'all' to evaluate every split.",
+    )
     args = parser.parse_args()
 
     sample_queries = args.sample_queries if args.sample_queries and args.sample_queries > 0 else None
     results = evaluate_with_sampling(
-        args.program_path, k=args.k, sample_queries=sample_queries, seed=args.seed
+        args.program_path,
+        k=args.k,
+        sample_queries=sample_queries,
+        seed=args.seed,
+        domain=args.domain,
     )
     print(json.dumps(results, indent=2))
 
