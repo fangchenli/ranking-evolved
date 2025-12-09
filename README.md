@@ -41,6 +41,7 @@ Previous kernel (2025-12-06 run):
 - 2025-12-06 (commit around 19050cf): OpenEvolve run (80 iterations, smoothed IDF + tf log damping integrated) produced best combined ~0.1506 on full BRIGHT biology (precision@10 ~0.0515, recall@10 ~0.1644, NDCG@10 ~0.1547, MAP ~0.1297, MRR ~0.2526). Updated `src/ranking_evolved/bm25.py` with those kernel tweaks (removed self-normalization).
 - 2025-12-07 (commit 19050cf+): Overnight OpenEvolve run (200 iterations, tf saturation + tighter IDF smoothing) yielded combined ~0.1748 on full BRIGHT biology (precision@10 ~0.0641, recall@10 ~0.1955, NDCG@10 ~0.1828, MAP ~0.1469, MRR ~0.2846). `src/ranking_evolved/bm25.py` now uses the smoothed IDF (ε≈1e-5) and tf saturation factor.
 - 2025-12-07 later: Best in-run candidate (iteration 113, ID 7cc8c383…) re-evaluated at combined ~0.2095 on full BRIGHT biology (precision@10 ~0.0796, recall@10 ~0.2548, NDCG@10 ~0.2219, MAP ~0.1724, MRR ~0.3188). This kernel (clipped IDF, unique query terms, log-damped TF saturation) is integrated into `src/ranking_evolved/bm25.py`.
+- 2025-12-08: Psychology-focused run (gpt-5.1, 100 iterations) yielded a modest psych candidate (saved as `openevolve_output/best/best_program_psychology.py`) with combined ~0.0847 on psychology (prec@10 ~0.0386, rec@10 ~0.1145, nDCG@10 ~0.0870, MAP ~0.0707, MRR ~0.1125), up from the baseline psych score (~0.0756). Not integrated into main `bm25.py`.
 
 ## Full BRIGHT evaluation (current bm25.py, k=10, full queries)
 

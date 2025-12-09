@@ -1,7 +1,8 @@
-max_iterations: 200
+max_iterations: 100
 log_level: "INFO"
 random_seed: 42
 diff_based_evolution: true
+max_code_length: 12000
 
 llm:
   models:
@@ -9,18 +10,17 @@ llm:
       weight: 1.0
   api_base: "https://api.openai.com/v1"
   api_key: null  # falls back to OPENAI_API_KEY env var
-  temperature: 0.6
-  top_p: 0.9
-  max_tokens: 4096
-  timeout: 90
+  temperature: 0.7
+  top_p: 0.95
+  max_tokens: 8192
+  timeout: 120
   retries: 3
   retry_delay: 5
 
 prompt:
   system_message: |
-    You are evolving a BM25 ranking function for the BRIGHT biology documents.
-    Optimize ranking metrics (ndcg@10, map, mrr, precision@10, recall@10).
-    Keep the BM25 interface compatible and avoid adding extra dependencies.
+    You are evolving a BM25 ranking function for BRIGHT. Focus on improving the psychology split without regressing strong domains, and avoid making weak math splits worse.
+    Optimize ranking metrics (ndcg@10, map, mrr, precision@10, recall@10). Keep the BM25 interface compatible and avoid adding extra dependencies.
   evaluator_system_message: "You review candidate ranking code for quality and correctness."
   num_top_programs: 3
   num_diverse_programs: 2
@@ -44,7 +44,7 @@ evaluator:
   timeout: 180
   max_retries: 1
   cascade_evaluation: false
-  parallel_evaluations: 3
+  parallel_evaluations: 2
 
 evolution_trace:
   enabled: true

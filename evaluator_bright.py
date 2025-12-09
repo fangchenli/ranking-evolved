@@ -10,10 +10,9 @@ and a --domain flag (or BRIGHT_DOMAIN env) to select a split or run across all s
 import argparse
 import importlib.util
 import json
-import os
 import random
 from functools import lru_cache
-from typing import Callable, Tuple
+from typing import Callable, Tuple, Type
 
 import numpy as np
 from datasets import load_dataset
@@ -27,7 +26,6 @@ from ranking_evolved.metrics import (
     recall_at_k,
     reciprocal_rank,
 )
-from ranking_evolved.bm25 import Corpus
 
 BRIGHT_SPLITS = [
     "biology",
@@ -45,8 +43,10 @@ BRIGHT_SPLITS = [
 ]
 
 
-def _load_candidate(program_path: str) -> Tuple[type, Callable[[str], list[str]]]:
-    """Dynamically load a BM25 implementation and tokenizer from a file path."""
+def _load_candidate(
+    program_path: str,
+) -> Tuple[type, Callable[[str], list[str]], Type]:
+    """Dynamically load a BM25 implementation, tokenizer, and Corpus from a file path."""
     spec = importlib.util.spec_from_file_location("candidate_bm25", program_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not load candidate module from {program_path}")
@@ -57,42 +57,26 @@ def _load_candidate(program_path: str) -> Tuple[type, Callable[[str], list[str]]
     if not hasattr(module, "BM25"):
         raise AttributeError("Candidate module must define a BM25 class.")
     if not hasattr(module, "tokenize"):
-        raise AttributeError("Candidate module must define a tokenize(text: str) -> list[str] function.")
+        raise AttributeError(
+            "Candidate module must define a tokenize(text: str) -> list[str] function."
+        )
+    if not hasattr(module, "Corpus"):
+        raise AttributeError("Candidate module must define a Corpus class.")
 
-    return module.BM25, module.tokenize
+    return module.BM25, module.tokenize, module.Corpus
 
 
-@lru_cache(maxsize=1)
-def _bright_split(domain: str) -> tuple[Corpus, list[str], list[list[int]]]:
-    """Load BRIGHT documents, queries, and gold doc IDs for a given domain."""
+@lru_cache(maxsize=None)
+def _bright_raw(domain: str):
+    """Load raw BRIGHT documents and examples for a given domain."""
     documents = load_dataset("xlangai/BRIGHT", "documents", split=domain)
     examples = load_dataset("xlangai/BRIGHT", "examples", split=domain)
-
-    corpus = Corpus.from_huggingface_dataset(documents)
-    queries = [example["query"] for example in examples]
-    gold_ids = [example["gold_ids"] for example in examples]
-    return corpus, queries, gold_ids
+    return documents, examples
 
 
 def evaluate(program_path: str, k: int = 10) -> dict[str, float]:
-    """
-    Evaluate a BM25 implementation against BRIGHT biology with multiple metrics.
-    Respects env vars:
-      - BRIGHT_SAMPLE_QUERIES: int > 0 to subsample queries for faster evolution
-      - BRIGHT_SAMPLE_SEED: seed for reproducible sampling (defaults to 42)
-      - BRIGHT_DOMAIN: split name (default: biology). Use 'all' to evaluate every split.
-    """
-    env_sample = os.getenv("BRIGHT_SAMPLE_QUERIES")
-    env_seed = os.getenv("BRIGHT_SAMPLE_SEED")
-    env_domain = os.getenv("BRIGHT_DOMAIN")
-
-    sample_queries = int(env_sample) if env_sample and int(env_sample) > 0 else None
-    seed = int(env_seed) if env_seed is not None else 42
-    domain = env_domain or "biology"
-
-    return evaluate_with_sampling(
-        program_path, k=k, sample_queries=sample_queries, seed=seed, domain=domain
-    )
+    """Evaluate a BM25 implementation against BRIGHT biology with multiple metrics."""
+    return evaluate_with_sampling(program_path, k=k, sample_queries=None, seed=42, domain="biology")
 
 
 def evaluate_with_sampling(
@@ -112,8 +96,13 @@ def evaluate_with_sampling(
         seed: Seed for reproducible sampling.
         domain: BRIGHT split name (e.g., biology) or "all" to aggregate across splits.
     """
+    BM25Impl, tokenize_fn, CorpusCls = _load_candidate(program_path)
+
     def _eval_single(split: str) -> dict[str, float]:
-        corpus, raw_queries, gold_id_lists = _bright_split(split)
+        documents, examples = _bright_raw(split)
+        corpus = CorpusCls.from_huggingface_dataset(documents)
+        raw_queries = [example["query"] for example in examples]
+        gold_id_lists = [example["gold_ids"] for example in examples]
 
         if sample_queries is not None and sample_queries < len(raw_queries):
             rng = random.Random(seed)
@@ -121,7 +110,6 @@ def evaluate_with_sampling(
             raw_queries = [raw_queries[i] for i in indices]
             gold_id_lists = [gold_id_lists[i] for i in indices]
 
-        BM25Impl, tokenize_fn = _load_candidate(program_path)
         gold_indices = [corpus.id_to_idx(ids) for ids in gold_id_lists]
 
         bm25 = BM25Impl(corpus)
@@ -158,7 +146,9 @@ def evaluate_with_sampling(
             "recall_at_k": float(np.mean(recall_scores)),
             "ndcg_at_k": float(np.mean(ndcg_scores)),
             "reciprocal_rank": float(np.mean(rr_scores)),
-            "mean_average_precision": mean_average_precision(all_relevant, all_retrieved),
+            "mean_average_precision": mean_average_precision(
+                all_relevant, all_retrieved
+            ),
             "mean_reciprocal_rank": mean_reciprocal_rank(all_relevant, all_retrieved),
             "k": k,
             "queries": len(all_relevant),
@@ -217,11 +207,14 @@ def main() -> None:
     parser.add_argument(
         "--sample-queries",
         type=int,
-        default=32,
-        help="Randomly sample this many queries for speed (default: 32; use 0 or omit to disable sampling).",
+        default=0,
+        help="Randomly sample this many queries for speed (default: 0; use 0 or omit to disable sampling).",
     )
     parser.add_argument(
-        "--seed", type=int, default=42, help="Random seed for query sampling (default: 42)."
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for query sampling (default: 42).",
     )
     parser.add_argument(
         "--domain",
@@ -231,7 +224,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    sample_queries = args.sample_queries if args.sample_queries and args.sample_queries > 0 else None
+    sample_queries = (
+        args.sample_queries if args.sample_queries and args.sample_queries > 0 else None
+    )
     results = evaluate_with_sampling(
         args.program_path,
         k=args.k,
