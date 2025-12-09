@@ -7,14 +7,11 @@ BM25 ranking experiments with evolution via [OpenEvolve](https://github.com/algo
 1. Install deps (needs Python >=3.11): `uv sync` (or `pip install -e .` if you prefer pip)
 2. Set your LLM key (uses OpenAI-compatible API): `export OPENAI_API_KEY="your-key"`
 3. Run evolution (config currently set to 200 iterations):  
-   `python openevolve/openevolve-run.py src/ranking_evolved/bm25.py evaluator_bright.py --config openevolve_config.yaml`
+   `uv run python openevolve/openevolve-run.py src/ranking_evolved/bm25.py evaluator_bright.py --config openevolve_config.yaml`
 4. Inspect metrics in the CLI output and artifacts in `openevolve_output/` (best program and logs).
 
-The evaluator (`evaluator_bright.py`) computes precision/recall@k, NDCG@k, MAP, and MRR, and uses their average as `combined_score` for selection. For faster exploratory runs, set `BRIGHT_SAMPLE_QUERIES` (e.g., 32) and optionally `BRIGHT_SAMPLE_SEED` to subsample queries during evaluation.
-
-Quick exploratory run (shorter, higher temperature):
-- Set sampling if desired: `export BRIGHT_SAMPLE_QUERIES=32` (or unset for full queries)
-- Run: `python openevolve/openevolve-run.py src/ranking_evolved/bm25.py evaluator_bright.py --config openevolve_config_explore.yaml`
+The evaluator (`evaluator_bright.py`) computes precision/recall@k, NDCG@k, MAP, and MRR, and uses their average as `combined_score` for selection. For direct evaluation without OpenEvolve:  
+`uv run python evaluator_bright.py src/ranking_evolved/bm25.py --k 10 --sample-queries 0 --domain biology`
 
 ### Scoring equations
 
