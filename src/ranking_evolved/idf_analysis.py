@@ -1,4 +1,5 @@
 """Utilities for computing and comparing arbitrary IDF variants."""
+
 from collections import Counter
 from typing import Callable, Iterable
 
@@ -164,7 +165,9 @@ def idf_sensitivity_report(
         "std": float(delta_arr.std()) if delta_arr.size else 0.0,
         "min": float(delta_arr.min()) if delta_arr.size else 0.0,
         "max": float(delta_arr.max()) if delta_arr.size else 0.0,
-        "pct_gt_threshold": float((np.abs(delta_arr) > delta_threshold).mean()) if delta_arr.size else 0.0,
+        "pct_gt_threshold": float((np.abs(delta_arr) > delta_threshold).mean())
+        if delta_arr.size
+        else 0.0,
     }
 
     def _agg(arr: list[float]) -> float:

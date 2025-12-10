@@ -76,7 +76,9 @@ def _bright_raw(domain: str):
 
 def evaluate(program_path: str, k: int = 10) -> dict[str, float]:
     """Evaluate a BM25 implementation against BRIGHT biology with multiple metrics."""
-    return evaluate_with_sampling(program_path, k=k, sample_queries=None, seed=42, domain="biology")
+    return evaluate_with_sampling(
+        program_path, k=k, sample_queries=None, seed=42, domain="biology"
+    )
 
 
 def evaluate_with_sampling(

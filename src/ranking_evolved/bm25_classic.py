@@ -66,7 +66,9 @@ class Corpus:
     @cached_property
     def average_document_length(self) -> float:
         """Average number of terms per document."""
-        return float(np.mean(self.document_length)) if len(self.document_length) else 0.0
+        return (
+            float(np.mean(self.document_length)) if len(self.document_length) else 0.0
+        )
 
     @cached_property
     def vocabulary(self) -> dict[str, int]:
@@ -81,7 +83,10 @@ class Corpus:
         """
         df_values = np.array(list(self.document_frequency.values()), dtype=float)
         idf = np.log((self.document_count - df_values + 0.5) / (df_values + 0.5) + 1.0)
-        return {term: float(idf_value) for term, idf_value in zip(self.document_frequency.keys(), idf)}
+        return {
+            term: float(idf_value)
+            for term, idf_value in zip(self.document_frequency.keys(), idf)
+        }
 
     def id_to_idx(self, ids: list[str]) -> list[int]:
         if not self.ids:
@@ -138,7 +143,9 @@ class BM25:
             self.k1,
         )
 
-    def rank(self, query: list[str], top_k: int | None = None) -> tuple[np.ndarray, np.ndarray]:
+    def rank(
+        self, query: list[str], top_k: int | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
         scores = np.array([self.score(query, idx) for idx in range(len(self.corpus))])
         sorted_indices = np.argsort(scores)[::-1]
         scores_sorted = scores[sorted_indices]

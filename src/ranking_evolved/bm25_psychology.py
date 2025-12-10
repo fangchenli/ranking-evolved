@@ -217,7 +217,9 @@ class BM25:
 
         idf_vals = np.fromiter((idf.get(t, 0.0) for t in terms), dtype=np.float32)
 
-        tf_part = BM25._tf_component(tf, norm, k1) * BM25._coverage_boost(tf, len(terms))
+        tf_part = BM25._tf_component(tf, norm, k1) * BM25._coverage_boost(
+            tf, len(terms)
+        )
         score_vec = idf_vals * np.log1p(tf_part)
         score = float(score_vec.sum())
 

@@ -61,9 +61,13 @@ def load_corpus(domain: str) -> Corpus:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="IDF analysis for BRIGHT.")
-    parser.add_argument("--domain", default="biology", help="BRIGHT split to load (default: biology).")
     parser.add_argument(
-        "--output", default="idf_histogram.png", help="Path to save histogram plot (default: idf_histogram.png)."
+        "--domain", default="biology", help="BRIGHT split to load (default: biology)."
+    )
+    parser.add_argument(
+        "--output",
+        default="idf_histogram.png",
+        help="Path to save histogram plot (default: idf_histogram.png).",
     )
     parser.add_argument(
         "--idf",
@@ -84,8 +88,12 @@ def main() -> None:
     hist_b = idf_histogram_data(idf_b)
 
     print(f"Domain: {args.domain}")
-    print(f"Classic BM25 IDF: mean={hist_a['mean']:.4f}, std={hist_a['std']:.4f}, min={hist_a['min']:.4f}, max={hist_a['max']:.4f}")
-    print(f"Tuned IDF ({args.idf}): mean={hist_b['mean']:.4f}, std={hist_b['std']:.4f}, min={hist_b['min']:.4f}, max={hist_b['max']:.4f}")
+    print(
+        f"Classic BM25 IDF: mean={hist_a['mean']:.4f}, std={hist_a['std']:.4f}, min={hist_a['min']:.4f}, max={hist_a['max']:.4f}"
+    )
+    print(
+        f"Tuned IDF ({args.idf}): mean={hist_b['mean']:.4f}, std={hist_b['std']:.4f}, min={hist_b['min']:.4f}, max={hist_b['max']:.4f}"
+    )
     print("Delta stats    :", cmp["stats"])
 
     # Plot histograms.
