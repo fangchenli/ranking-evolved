@@ -9,8 +9,6 @@ biology-tuned IDF, prints summary stats, and saves a histogram plot
 to idf_histogram.png.
 """
 
-from __future__ import annotations
-
 import argparse
 from pathlib import Path
 

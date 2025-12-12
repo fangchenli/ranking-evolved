@@ -40,6 +40,11 @@ Previous kernel (2025-12-06 run):
 - 2025-12-07 later: Best in-run candidate (iteration 113, ID 7cc8c383…) re-evaluated at combined ~0.2095 on full BRIGHT biology (precision@10 ~0.0796, recall@10 ~0.2548, NDCG@10 ~0.2219, MAP ~0.1724, MRR ~0.3188). This kernel (clipped IDF, unique query terms, log-damped TF saturation) is integrated into `src/ranking_evolved/bm25.py`.
 - 2025-12-08: Psychology-focused run (gpt-5.1, 100 iterations) yielded a modest psych candidate (saved as `openevolve_output/best/best_program_psychology.py`) with combined ~0.0847 on psychology (prec@10 ~0.0386, rec@10 ~0.1145, nDCG@10 ~0.0870, MAP ~0.0707, MRR ~0.1125), up from the baseline psych score (~0.0756). Not integrated into main `bm25.py`.
 
+## Gensim BM25 baseline
+
+- Script: `uv run python scripts/eval_bright_gensim_lucene.py --domain biology --k 10` (add `--top-k` to truncate ranking or adjust `--k1`/`--b`).
+- Pipeline: tokenizes BRIGHT, builds a `Dictionary`, fits `LuceneBM25Model`, converts docs with `model[bow]`, ranks via a `SparseMatrixSimilarity` index, and reports JSON metrics (Prec@k, Rec@k, nDCG@k, MAP, MRR, combined).
+
 ## Full BRIGHT evaluation (current bm25.py, k=10, full queries)
 
 | Split | Combined | Prec@10 | Rec@10 | nDCG@10 | MAP | MRR | Queries |
