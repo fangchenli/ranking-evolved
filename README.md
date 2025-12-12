@@ -64,3 +64,23 @@ Previous kernel (2025-12-06 run):
 | **macro avg** | **0.1233** | **0.0584** | **0.1461** | **0.1277** | **0.1002** | **0.1838** | — |
 
 Macro combined (all splits): ~0.1233. Low performers: aops, theoremqa_*; consider targeted tuning.
+
+## NDCG@10 Results (2025-12-12 13:53:35)
+
+BM25 Implementation: `src/ranking_evolved/bm25_classic.py`
+
+| Domain | NDCG@10 |
+| --- | --- |
+| aops | 0.0273 |
+| biology | 0.0813 |
+| earth_science | 0.1123 |
+| economics | 0.1048 |
+| leetcode | 0.1342 |
+| pony | 0.0545 |
+| psychology | 0.0677 |
+| robotics | 0.0617 |
+| stackoverflow | 0.1465 |
+| sustainable_living | 0.0938 |
+| theoremqa_questions | 0.0464 |
+| theoremqa_theorems | 0.0234 |
+| **average** | **0.0795** |
