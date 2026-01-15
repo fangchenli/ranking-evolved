@@ -373,15 +373,17 @@ Lucene 8.0+ removed the `(k1+1)` factor from the TF numerator for performance (s
 
 **Why Gensim BM25 underperforms:**
 
-Gensim's BM25 models use a vector-space approach where both query and document are represented as BM25-weighted vectors, and scoring uses dot product: `score = query_vec · doc_vec`. This fundamentally changes the scoring semantics:
+Gensim's BM25 models use a vector-space approach where scoring is computed as `score = query_vec · doc_vec`. This has several issues:
 
-1. **IDF² effect**: Since both vectors contain `IDF × TF` weights, the dot product computes `Σ (IDF × TF_q) × (IDF × TF_d) = Σ IDF² × TF_q × TF_d`. This squares the IDF contribution, over-weighting rare terms.
+1. **Zero IDF terms are ignored**: Terms appearing in exactly N/2 documents get IDF=0 (classic BM25 formula: `log((N-df+0.5)/(df+0.5))` = 0 when df=N/2). Gensim stores these as 0, so they contribute nothing to scores—even if they're discriminative.
 
-2. **LuceneBM25Model missing (k1+1)**: Uses `tf / (tf + k1 * norm)` instead of `tf * (k1+1) / (tf + k1 * norm)`, reducing scores by 2.5x (for k1=1.5). Note: The IDF formula is actually correct.
+2. **IDF² amplification**: The dot product computes `Σ (IDF × TF_q) × (IDF × TF_d)`, squaring the IDF contribution and over-weighting rare terms relative to common ones.
 
-3. **OkapiBM25Model IDF clamping**: Clamps negative IDF to `epsilon × avg_idf` (default ε=0.25), which over-weights very common terms like "the" and "of".
+3. **LuceneBM25Model missing (k1+1)**: Uses `tf / (tf + k1 * norm)` instead of `tf * (k1+1) / (tf + k1 * norm)`, reducing scores by 2.5x (for k1=1.5).
 
-Run verification: `uv run python -m benchmarks.verify_gensim_formulas`
+4. **OkapiBM25Model inconsistent IDF clamping**: Negative IDF terms get clamped to `epsilon × avg_idf`, but zero-IDF terms are stored as 0—creating inconsistent treatment of common terms.
+
+Run verification: `uv run python -m benchmarks.gensim_root_cause`
 
 See [bm25_formulas.md](references/bm25_formulas.md) for detailed formula analysis.
 
