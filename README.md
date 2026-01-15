@@ -104,13 +104,13 @@ Controls how rare/common terms are weighted:
 
 | Strategy | Formula | When to use |
 |----------|---------|-------------|
-| `classic` | `log((N-df+0.5)/(df+0.5))` | Academic baseline (can go negative) |
-| `lucene` | `log(1 + (N-df+0.5)/(df+0.5))` | General use (always positive) |
-| `atire` | `log(N/df)` | Simpler formula |
-| `bm25l` | `log((N+1)/(df+0.5))` | Non-negative, for BM25L |
-| `bm25+` | `log((N+1)/df)` | Non-negative, for BM25+ |
-| `clipped` | `clip(log(...), 0, 8)` | Prevents extreme values |
-| `evolved` | `clip(log((N+0.5)/(df+0.5)), 0, 8)` | This project's best |
+| `classic` | $\log\frac{N - df + 0.5}{df + 0.5}$ | Academic baseline (can go negative) |
+| `lucene` | $\log\left(1 + \frac{N - df + 0.5}{df + 0.5}\right)$ | General use (always positive) |
+| `atire` | $\log\frac{N}{df}$ | Simpler formula |
+| `bm25l` | $\log\frac{N + 1}{df + 0.5}$ | Non-negative, for BM25L |
+| `bm25+` | $\log\frac{N + 1}{df}$ | Non-negative, for BM25+ |
+| `clipped` | $\text{clip}(\log(\cdots), 0, 8)$ | Prevents extreme values |
+| `evolved` | $\text{clip}\left(\log\frac{N + 0.5}{df + 0.5}, 0, 8\right)$ | This project's best |
 
 #### TF Strategies (Term Frequency Saturation)
 
@@ -118,11 +118,11 @@ Controls how term frequency affects scores:
 
 | Strategy | Formula | When to use |
 |----------|---------|-------------|
-| `classic` | `tf*(k1+1)/(tf+k1*norm)` | Standard BM25 |
-| `bm25l` | `((k1+1)*(c+δ))/(k1+c+δ)` | Long documents (adds bonus before saturation) |
-| `bm25+` | `tf*(k1+1)/(tf+k1*norm) + δ` | Long documents (adds minimum boost) |
-| `atire` | `(k1+1)*tf/(k1*norm+tf)` | Equivalent to classic, different form |
-| `evolved` | `log1p(tf_raw * tf_sat)` | Log-damped, this project's best |
+| `classic` | $\frac{tf \cdot (k_1 + 1)}{tf + k_1 \cdot \text{norm}}$ | Standard BM25 |
+| `bm25l` | $\frac{(k_1 + 1)(c + \delta)}{k_1 + c + \delta}$ | Long documents (adds bonus before saturation) |
+| `bm25+` | $\frac{tf \cdot (k_1 + 1)}{tf + k_1 \cdot \text{norm}} + \delta$ | Long documents (adds minimum boost) |
+| `atire` | $\frac{(k_1 + 1) \cdot tf}{k_1 \cdot \text{norm} + tf}$ | Equivalent to classic, different form |
+| `evolved` | $\log(1 + tf_{raw} \cdot tf_{sat})$ | Log-damped, this project's best |
 
 #### Query Term Modes
 
@@ -132,7 +132,7 @@ Controls how repeated query terms are handled:
 |------|----------|-------------|
 | `unique` | Each unique term contributes once | Default, best for natural language queries |
 | `sum_all` | Sum scores for all occurrences | Pyserini-compatible, for keyword queries |
-| `saturated` | Apply `(k3+1)*qtf/(k3+qtf)` | When repetition signals emphasis |
+| `saturated` | Apply $\frac{(k_3 + 1) \cdot qtf}{k_3 + qtf}$ | When repetition signals emphasis |
 
 ### API Reference
 
@@ -180,9 +180,7 @@ All configurations tested with simple whitespace tokenizer on BRIGHT biology (57
 
 All BM25 variants share the same structure:
 
-```
-Score(doc, query) = Σ IDF(term) × TF(term, doc)
-```
+$$\text{Score}(d, q) = \sum_{t \in q} \text{IDF}(t) \times \text{TF}(t, d)$$
 
 Where:
 - **IDF (Inverse Document Frequency)**: How rare/discriminative is this term? Rare terms get higher weight.
@@ -192,14 +190,14 @@ The variants differ in **how they handle edge cases**:
 
 ### IDF Variants: Handling Common Terms
 
-The classic IDF formula `log((N-df+0.5)/(df+0.5))` produces **negative values** for terms appearing in >50% of documents. Different variants handle this differently:
+The classic IDF formula $\log\frac{N - df + 0.5}{df + 0.5}$ produces **negative values** for terms appearing in >50% of documents. Different variants handle this differently:
 
 | Problem | Solution | Formula |
 |---------|----------|---------|
-| Negative IDF for common terms | **Add 1 inside log** (Lucene) | `log(1 + (N-df+0.5)/(df+0.5))` |
-| Negative IDF for common terms | **Simpler ratio** (ATIRE) | `log(N/df)` |
-| Negative IDF for common terms | **Non-negative numerator** (BM25L/BM25+) | `log((N+1)/(df+0.5))` |
-| Extreme IDF values | **Clip to range** (Evolved) | `clip(log((N+0.5)/(df+0.5)), 0, 8)` |
+| Negative IDF for common terms | **Add 1 inside log** (Lucene) | $\log\left(1 + \frac{N - df + 0.5}{df + 0.5}\right)$ |
+| Negative IDF for common terms | **Simpler ratio** (ATIRE) | $\log\frac{N}{df}$ |
+| Negative IDF for common terms | **Non-negative numerator** (BM25L/BM25+) | $\log\frac{N + 1}{df + 0.5}$ |
+| Extreme IDF values | **Clip to range** (Evolved) | $\text{clip}\left(\log\frac{N + 0.5}{df + 0.5}, 0, 8\right)$ |
 
 ### TF Variants: Handling Long Documents
 
@@ -207,9 +205,9 @@ The standard TF formula penalizes long documents. If a 1000-word doc and 100-wor
 
 | Problem | Solution | How it works |
 |---------|----------|--------------|
-| Long docs unfairly penalized | **Add bonus δ** (BM25L) | Adds δ=0.5 to normalized TF before saturation |
-| Long docs unfairly penalized | **Lower bound** (BM25+) | Adds δ=1.0 after TF saturation (minimum boost for any match) |
-| TF saturation too aggressive | **Log damping** (Evolved) | `log1p(tf_raw × tf_sat)` instead of raw product |
+| Long docs unfairly penalized | **Add bonus δ** (BM25L) | Adds $\delta = 0.5$ to normalized TF before saturation |
+| Long docs unfairly penalized | **Lower bound** (BM25+) | Adds $\delta = 1.0$ after TF saturation (minimum boost for any match) |
+| TF saturation too aggressive | **Log damping** (Evolved) | $\log(1 + tf_{raw} \times tf_{sat})$ instead of raw product |
 
 ### Query Term Handling
 
@@ -219,7 +217,7 @@ Most implementations treat queries as **bag-of-words**: each unique term contrib
 |----------|-------------|---------|
 | **unique** (default) | Most cases—repetition in queries is usually incidental | Each term scores once |
 | **sum_all** | Pyserini compatibility, keyword-style queries | Each occurrence adds to score |
-| **saturated** | When repetition signals emphasis | `(k3+1)*qtf/(k3+qtf)` weights repeated terms with diminishing returns |
+| **saturated** | When repetition signals emphasis | $\frac{(k_3 + 1) \cdot qtf}{k_3 + qtf}$ weights repeated terms with diminishing returns |
 
 ## Running OpenEvolve
 
@@ -270,27 +268,22 @@ uv run python -m benchmarks.cross_validation
 The current best-performing kernel (from OpenEvolve iteration 113):
 
 **IDF:**
-```
-idf(t) = clip(log((N + 0.5) / (df(t) + 0.5)), 0, 8)
-```
 
-**Score kernel:**
-```python
-# Order-preserving unique query terms
-unique_terms = list(dict.fromkeys(query))
+$$\text{IDF}(t) = \text{clip}\left(\log\frac{N + 0.5}{df(t) + 0.5}, 0, 8\right)$$
 
-# Standard BM25 TF saturation
-norm = 1 - b + b * (doc_length / avg_doc_length)
-tf_raw = (tf * (k1 + 1)) / (tf + k1 * norm)
+**TF Saturation:**
 
-# Additional saturation factor (evolved)
-tf_sat = tf / (tf + k1 + 0.5)
+$$\text{norm} = 1 - b + b \cdot \frac{|d|}{\text{avgdl}}$$
 
-# Log damping (evolved)
-score = sum(idf * log1p(tf_raw * tf_sat))
-```
+$$tf_{raw} = \frac{tf \cdot (k_1 + 1)}{tf + k_1 \cdot \text{norm}}$$
 
-**Parameters:** k1=1.5, b=0.75
+$$tf_{sat} = \frac{tf}{tf + k_1 + 0.5}$$
+
+**Score:**
+
+$$\text{Score}(d, q) = \sum_{t \in \text{unique}(q)} \text{IDF}(t) \cdot \log(1 + tf_{raw} \cdot tf_{sat})$$
+
+**Parameters:** $k_1 = 1.5$, $b = 0.75$
 
 ## Benchmark Results
 
@@ -375,15 +368,15 @@ Lucene 8.0+ removed the `(k1+1)` factor from the TF numerator for performance (s
 
 **Why Gensim BM25 underperforms:**
 
-Gensim's BM25 models use a vector-space approach where scoring is computed as `score = query_vec · doc_vec`. This has several issues:
+Gensim's BM25 models use a vector-space approach where scoring is computed as $\text{score} = \vec{q} \cdot \vec{d}$. This has several issues:
 
-1. **Zero IDF terms are ignored**: Terms appearing in exactly N/2 documents get IDF=0 (classic BM25 formula: `log((N-df+0.5)/(df+0.5))` = 0 when df=N/2). Gensim stores these as 0, so they contribute nothing to scores—even if they're discriminative.
+1. **Zero IDF terms are ignored**: Terms appearing in exactly $N/2$ documents get $\text{IDF} = 0$ (classic BM25 formula: $\log\frac{N - df + 0.5}{df + 0.5} = 0$ when $df = N/2$). Gensim stores these as 0, so they contribute nothing to scores—even if they're discriminative.
 
-2. **IDF² amplification**: The dot product computes `Σ (IDF × TF_q) × (IDF × TF_d)`, squaring the IDF contribution and over-weighting rare terms relative to common ones.
+2. **IDF² amplification**: The dot product computes $\sum (\text{IDF} \times TF_q) \times (\text{IDF} \times TF_d)$, squaring the IDF contribution and over-weighting rare terms relative to common ones.
 
-3. **LuceneBM25Model missing (k1+1)**: Uses `tf / (tf + k1 * norm)` instead of `tf * (k1+1) / (tf + k1 * norm)`, reducing scores by 2.5x (for k1=1.5).
+3. **LuceneBM25Model missing $(k_1+1)$**: Uses $\frac{tf}{tf + k_1 \cdot \text{norm}}$ instead of $\frac{tf \cdot (k_1 + 1)}{tf + k_1 \cdot \text{norm}}$, reducing scores by 2.5x (for $k_1 = 1.5$).
 
-4. **OkapiBM25Model inconsistent IDF clamping**: Negative IDF terms get clamped to `epsilon × avg_idf`, but zero-IDF terms are stored as 0—creating inconsistent treatment of common terms.
+4. **OkapiBM25Model inconsistent IDF clamping**: Negative IDF terms get clamped to $\epsilon \times \text{avg\_idf}$, but zero-IDF terms are stored as 0—creating inconsistent treatment of common terms.
 
 Run verification: `uv run python -m benchmarks.gensim_root_cause`
 
