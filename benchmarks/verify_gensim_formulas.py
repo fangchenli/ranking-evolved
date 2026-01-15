@@ -24,7 +24,9 @@ def verify_idf_formulas():
     test_dfs = [1, 10, 100, 500, 900]  # Document frequencies to test
 
     print(f"\nN = {N} documents\n")
-    print(f"{'df':>6} | {'Classic':>10} | {'Lucene (correct)':>16} | {'Gensim Lucene':>14} | {'Gensim Okapi':>12} | {'ATIRE':>10}")
+    print(
+        f"{'df':>6} | {'Classic':>10} | {'Lucene (correct)':>16} | {'Gensim Lucene':>14} | {'Gensim Okapi':>12} | {'ATIRE':>10}"
+    )
     print("-" * 80)
 
     for df in test_dfs:
@@ -44,7 +46,9 @@ def verify_idf_formulas():
         # ATIRE IDF: log(N / df)
         atire_idf = np.log(N / df)
 
-        print(f"{df:>6} | {classic_idf:>10.4f} | {lucene_correct:>16.4f} | {gensim_lucene:>14.4f} | {gensim_okapi:>12.4f} | {atire_idf:>10.4f}")
+        print(
+            f"{df:>6} | {classic_idf:>10.4f} | {lucene_correct:>16.4f} | {gensim_lucene:>14.4f} | {gensim_okapi:>12.4f} | {atire_idf:>10.4f}"
+        )
 
     # Verify mathematical equivalence of Lucene formulas
     print("\n" + "=" * 70)
@@ -81,13 +85,15 @@ def verify_tf_formulas():
     b = 0.75
     avgdl = 100
     test_cases = [
-        (1, 50),   # tf=1, doc_len=50 (short doc)
+        (1, 50),  # tf=1, doc_len=50 (short doc)
         (5, 100),  # tf=5, doc_len=100 (average doc)
-        (10, 200), # tf=10, doc_len=200 (long doc)
+        (10, 200),  # tf=10, doc_len=200 (long doc)
     ]
 
     print(f"\nk1={k1}, b={b}, avgdl={avgdl}\n")
-    print(f"{'tf':>4} | {'doc_len':>7} | {'Classic TF':>12} | {'Gensim Lucene TF':>16} | {'Ratio':>8}")
+    print(
+        f"{'tf':>4} | {'doc_len':>7} | {'Classic TF':>12} | {'Gensim Lucene TF':>16} | {'Ratio':>8}"
+    )
     print("-" * 60)
 
     for tf, doc_len in test_cases:
@@ -101,10 +107,12 @@ def verify_tf_formulas():
 
         ratio = classic_tf / gensim_lucene_tf
 
-        print(f"{tf:>4} | {doc_len:>7} | {classic_tf:>12.4f} | {gensim_lucene_tf:>16.4f} | {ratio:>8.2f}x")
+        print(
+            f"{tf:>4} | {doc_len:>7} | {classic_tf:>12.4f} | {gensim_lucene_tf:>16.4f} | {ratio:>8.2f}x"
+        )
 
-    print(f"\n✓ Gensim LuceneBM25Model is missing the (k1+1)={k1+1} factor in TF.")
-    print(f"  This causes scores to be {k1+1:.1f}x lower than correct BM25.")
+    print(f"\n✓ Gensim LuceneBM25Model is missing the (k1+1)={k1 + 1} factor in TF.")
+    print(f"  This causes scores to be {k1 + 1:.1f}x lower than correct BM25.")
 
 
 def verify_vector_space_issue():
@@ -160,27 +168,27 @@ def verify_vector_space_issue():
     print(f"\nExample: Query=['term1', 'term2'], Document has tf1={tf1}, tf2={tf2}")
     print(f"         df1={df1} (rare), df2={df2} (common)")
     print()
-    print(f"IDF values:")
+    print("IDF values:")
     print(f"  IDF(term1) = {idf1:.4f}")
     print(f"  IDF(term2) = {idf2:.4f}")
     print()
-    print(f"TF saturation (document):")
+    print("TF saturation (document):")
     print(f"  TF_sat(term1) = {tf_sat1:.4f}")
     print(f"  TF_sat(term2) = {tf_sat2:.4f}")
     print()
-    print(f"Correct BM25 score:")
-    print(f"  = IDF1 × TF1 + IDF2 × TF2")
+    print("Correct BM25 score:")
+    print("  = IDF1 × TF1 + IDF2 × TF2")
     print(f"  = {idf1:.4f} × {tf_sat1:.4f} + {idf2:.4f} × {tf_sat2:.4f}")
     print(f"  = {correct_score:.4f}")
     print()
-    print(f"Gensim vector-space dot product:")
+    print("Gensim vector-space dot product:")
     print(f"  query_vec = [{query_vec[0]:.4f}, {query_vec[1]:.4f}]")
     print(f"  doc_vec   = [{doc_vec[0]:.4f}, {doc_vec[1]:.4f}]")
     print(f"  dot_product = {dot_product_score:.4f}")
     print()
-    print(f"The dot product includes IDF²:")
-    print(f"  = (IDF1 × TF_q) × (IDF1 × TF_d1) + (IDF2 × TF_q) × (IDF2 × TF_d2)")
-    print(f"  ≈ IDF1² × TF_d1 + IDF2² × TF_d2  (when TF_q ≈ 1)")
+    print("The dot product includes IDF²:")
+    print("  = (IDF1 × TF_q) × (IDF1 × TF_d1) + (IDF2 × TF_q) × (IDF2 × TF_d2)")
+    print("  ≈ IDF1² × TF_d1 + IDF2² × TF_d2  (when TF_q ≈ 1)")
     print()
 
     # Show the impact
@@ -189,12 +197,16 @@ def verify_vector_space_issue():
     term2_correct = idf2 * tf_sat2
     term2_gensim = idf2 * idf2 * tf_sat2 * tf_q
 
-    print(f"Per-term contribution comparison:")
-    print(f"  term1 (rare):   correct={term1_correct:.4f}, gensim={term1_gensim:.4f}, ratio={term1_gensim/term1_correct:.2f}x")
-    print(f"  term2 (common): correct={term2_correct:.4f}, gensim={term2_gensim:.4f}, ratio={term2_gensim/term2_correct:.2f}x")
+    print("Per-term contribution comparison:")
+    print(
+        f"  term1 (rare):   correct={term1_correct:.4f}, gensim={term1_gensim:.4f}, ratio={term1_gensim / term1_correct:.2f}x"
+    )
+    print(
+        f"  term2 (common): correct={term2_correct:.4f}, gensim={term2_gensim:.4f}, ratio={term2_gensim / term2_correct:.2f}x"
+    )
     print()
-    print(f"The rare term (higher IDF) gets disproportionately more weight in Gensim!")
-    print(f"This distorts the ranking.")
+    print("The rare term (higher IDF) gets disproportionately more weight in Gensim!")
+    print("This distorts the ranking.")
 
 
 def verify_with_actual_gensim():

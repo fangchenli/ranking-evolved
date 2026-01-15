@@ -32,6 +32,7 @@ def compare_rankings():
     # Gensim BM25
     try:
         from benchmarks.baselines.gensim_bm25 import GensimOkapiBM25Baseline
+
         gensim_bm25 = GensimOkapiBM25Baseline.from_corpus(corpus, k1=1.5, b=0.75)
     except ImportError:
         print("Gensim not installed")
@@ -48,7 +49,7 @@ def compare_rankings():
 
         query_tokens = tokenize(query_text)
 
-        print(f"\n{'='*70}")
+        print(f"\n{'=' * 70}")
         print(f"Query {q_idx}: {query_text[:100]}...")
         print(f"Query length: {len(query_tokens)} tokens")
         print(f"Unique tokens: {len(set(query_tokens))}")
@@ -74,7 +75,9 @@ def compare_rankings():
 
             match = "✓" if our_idx == gensim_idx else "✗"
 
-            print(f"{rank+1:<6} | {our_idx:>8} {our_gold:<2} ({our_scores[rank]:>7.2f}) | {gensim_idx:>8} {gensim_gold:<2} ({gensim_scores[rank]:>7.2f}) | {match:^8}")
+            print(
+                f"{rank + 1:<6} | {our_idx:>8} {our_gold:<2} ({our_scores[rank]:>7.2f}) | {gensim_idx:>8} {gensim_gold:<2} ({gensim_scores[rank]:>7.2f}) | {match:^8}"
+            )
 
         # Count gold in top 10
         our_gold_in_top10 = len(our_top10 & gold_indices)
@@ -85,9 +88,13 @@ def compare_rankings():
         print(f"Top 10 overlap: {overlap}/10")
 
         # Analyze score distribution
-        print(f"\nScore statistics:")
-        print(f"  Our scores:    min={our_scores[-1]:.4f}, max={our_scores[0]:.4f}, mean={our_scores.mean():.4f}")
-        print(f"  Gensim scores: min={gensim_scores[-1]:.4f}, max={gensim_scores[0]:.4f}, mean={gensim_scores.mean():.4f}")
+        print("\nScore statistics:")
+        print(
+            f"  Our scores:    min={our_scores[-1]:.4f}, max={our_scores[0]:.4f}, mean={our_scores.mean():.4f}"
+        )
+        print(
+            f"  Gensim scores: min={gensim_scores[-1]:.4f}, max={gensim_scores[0]:.4f}, mean={gensim_scores.mean():.4f}"
+        )
 
 
 def analyze_term_contributions():
@@ -125,7 +132,7 @@ def analyze_term_contributions():
 
     query = ["fox", "lazy"]
     print(f"\nQuery: {query}")
-    print(f"\nDocuments:")
+    print("\nDocuments:")
     for i, doc in enumerate(docs):
         print(f"  Doc {i}: {doc}")
 
@@ -152,7 +159,9 @@ def analyze_term_contributions():
             contribution = q_weight * d_weight
             score += contribution
             if d_weight > 0:
-                details.append(f"'{dictionary[term_id]}': {q_weight:.4f}×{d_weight:.4f}={contribution:.4f}")
+                details.append(
+                    f"'{dictionary[term_id]}': {q_weight:.4f}×{d_weight:.4f}={contribution:.4f}"
+                )
 
         print(f"Doc {i} score: {score:.4f}  ({', '.join(details) if details else 'no matches'})")
 
@@ -174,6 +183,7 @@ def analyze_ranking_preservation():
 
     try:
         from benchmarks.baselines.gensim_bm25 import GensimOkapiBM25Baseline
+
         gensim_bm25 = GensimOkapiBM25Baseline.from_corpus(corpus, k1=1.5, b=0.75)
     except ImportError:
         print("Gensim not installed")
@@ -199,6 +209,7 @@ def analyze_ranking_preservation():
 
         # Compute rank correlation (Kendall tau) for top 100
         from scipy.stats import kendalltau
+
         our_top100 = our_indices[:100]
         gensim_top100 = gensim_indices[:100]
 
@@ -213,16 +224,16 @@ def analyze_ranking_preservation():
             tau, _ = kendalltau(our_r, gensim_r)
             kendall_tau.append(tau)
 
-    print(f"\nResults over first 20 queries:")
+    print("\nResults over first 20 queries:")
     print(f"  Our NDCG@10 mean:    {np.mean(our_ndcg):.4f}")
     print(f"  Gensim NDCG@10 mean: {np.mean(gensim_ndcg):.4f}")
     print(f"  Kendall tau mean:    {np.mean(kendall_tau):.4f} (1.0 = identical ranking)")
 
-    print(f"\nPer-query comparison:")
+    print("\nPer-query comparison:")
     print(f"{'Query':<8} | {'Our NDCG':>10} | {'Gensim NDCG':>12} | {'Tau':>8}")
     print("-" * 50)
     for i in range(min(10, len(our_ndcg))):
-        tau = kendall_tau[i] if i < len(kendall_tau) else float('nan')
+        tau = kendall_tau[i] if i < len(kendall_tau) else float("nan")
         print(f"{i:<8} | {our_ndcg[i]:>10.4f} | {gensim_ndcg[i]:>12.4f} | {tau:>8.4f}")
 
 

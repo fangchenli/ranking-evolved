@@ -109,7 +109,9 @@ def main():
         print(f"Evaluating {name}...")
         result = evaluate_config(corpus, queries, gold_indices, config, k)
         results[name] = result
-        print(f"  NDCG@{k}: {result['ndcg_at_k']:.4f}, MAP: {result['map']:.4f}, MRR: {result['mrr']:.4f}")
+        print(
+            f"  NDCG@{k}: {result['ndcg_at_k']:.4f}, MAP: {result['map']:.4f}, MRR: {result['mrr']:.4f}"
+        )
 
     # Print markdown table
     print("\n" + "=" * 80)

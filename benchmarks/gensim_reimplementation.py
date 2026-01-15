@@ -373,7 +373,7 @@ def verify_against_actual_gensim():
     our_query_vec = our_okapi.get_query_vector(query)
     gensim_query_vec = dict(gensim_okapi[dictionary.doc2bow(query)])
 
-    print(f"\nQuery vectors:")
+    print("\nQuery vectors:")
     print(f"  Our: {our_query_vec}")
     print(f"  Gensim: {gensim_query_vec}")
 
@@ -385,8 +385,10 @@ def verify_against_actual_gensim():
 
         # Compute Gensim score via dot product
         doc_vec = dict(gensim_okapi[bow_corpus[i]])
-        gensim_score = sum(gensim_query_vec.get(tid, 0) * doc_vec.get(tid, 0)
-                          for tid in set(gensim_query_vec) | set(doc_vec))
+        gensim_score = sum(
+            gensim_query_vec.get(tid, 0) * doc_vec.get(tid, 0)
+            for tid in set(gensim_query_vec) | set(doc_vec)
+        )
 
         match = "✓" if abs(our_score - gensim_score) < 1e-6 else "✗"
         print(f"{i:>4} {our_score:>12.6f} {gensim_score:>14.6f} {match:>8}")
@@ -435,6 +437,7 @@ def evaluate_on_bright():
             GensimLuceneBM25Baseline,
             GensimOkapiBM25Baseline,
         )
+
         print("Building actual Gensim baselines...")
         actual_okapi = GensimOkapiBM25Baseline.from_corpus(corpus, k1=1.5, b=0.75)
         actual_lucene = GensimLuceneBM25Baseline.from_corpus(corpus, k1=1.5, b=0.75)
@@ -452,10 +455,12 @@ def evaluate_on_bright():
     ]
 
     if has_gensim:
-        implementations.extend([
-            ("Actual Gensim Okapi", actual_okapi),
-            ("Actual Gensim Lucene", actual_lucene),
-        ])
+        implementations.extend(
+            [
+                ("Actual Gensim Okapi", actual_okapi),
+                ("Actual Gensim Lucene", actual_lucene),
+            ]
+        )
 
     results = {}
 
@@ -465,7 +470,7 @@ def evaluate_on_bright():
         all_relevant = []
         all_retrieved = []
 
-        for i, (query_text, gold) in enumerate(zip(queries, gold_indices)):
+        for i, (query_text, gold) in enumerate(zip(queries, gold_indices, strict=False)):
             query_tokens = tokenize(query_text)
             ranked_indices, _ = impl.rank(query_tokens)
 
@@ -493,7 +498,9 @@ def evaluate_on_bright():
     print("-" * 60)
 
     for name, metrics in sorted(results.items(), key=lambda x: -x[1]["ndcg_at_k"]):
-        print(f"{name:<25} {metrics['ndcg_at_k']:>10.4f} {metrics['map']:>10.4f} {metrics['mrr']:>10.4f}")
+        print(
+            f"{name:<25} {metrics['ndcg_at_k']:>10.4f} {metrics['map']:>10.4f} {metrics['mrr']:>10.4f}"
+        )
 
     # Verify reimplementation matches actual
     if has_gensim:
@@ -501,10 +508,20 @@ def evaluate_on_bright():
         print("VERIFICATION: Reimplementation matches Actual Gensim?")
         print("=" * 70)
 
-        okapi_match = abs(results["Reimpl Gensim Okapi"]["ndcg_at_k"] -
-                          results["Actual Gensim Okapi"]["ndcg_at_k"]) < 0.01
-        lucene_match = abs(results["Reimpl Gensim Lucene"]["ndcg_at_k"] -
-                           results["Actual Gensim Lucene"]["ndcg_at_k"]) < 0.01
+        okapi_match = (
+            abs(
+                results["Reimpl Gensim Okapi"]["ndcg_at_k"]
+                - results["Actual Gensim Okapi"]["ndcg_at_k"]
+            )
+            < 0.01
+        )
+        lucene_match = (
+            abs(
+                results["Reimpl Gensim Lucene"]["ndcg_at_k"]
+                - results["Actual Gensim Lucene"]["ndcg_at_k"]
+            )
+            < 0.01
+        )
 
         print(f"Okapi:  {'✓ MATCH' if okapi_match else '✗ MISMATCH'}")
         print(f"Lucene: {'✓ MATCH' if lucene_match else '✗ MISMATCH'}")

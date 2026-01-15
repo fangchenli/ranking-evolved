@@ -32,6 +32,8 @@ from ranking_evolved.bm25 import (
     BM25Config,
     BM25Unified,
     Corpus,
+)
+from ranking_evolved.bm25 import (
     tokenize as simple_tokenize,
 )
 from ranking_evolved.metrics import (
@@ -285,9 +287,7 @@ def print_results(results: dict) -> None:
     items.sort(key=lambda x: x[1]["ndcg_at_k"], reverse=True)
 
     for key, value in items:
-        print(
-            f"{key:<45} {value['ndcg_at_k']:>10.4f} {value['map']:>10.4f} {value['mrr']:>10.4f}"
-        )
+        print(f"{key:<45} {value['ndcg_at_k']:>10.4f} {value['map']:>10.4f} {value['mrr']:>10.4f}")
 
     print("-" * 80)
     print(f"Queries: {results['num_queries']}")

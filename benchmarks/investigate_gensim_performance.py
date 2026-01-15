@@ -32,8 +32,8 @@ def analyze_idf_squared_effect():
     print(f"\nQuery terms: term1 (rare, df={df1}), term2 (common, df={df2})")
     print(f"IDF values: idf1={idf1:.3f}, idf2={idf2:.3f}")
     print(f"IDF² values: idf1²={idf1**2:.3f}, idf2²={idf2**2:.3f}")
-    print(f"\nRatio idf1/idf2 = {idf1/idf2:.2f}")
-    print(f"Ratio idf1²/idf2² = {(idf1**2)/(idf2**2):.2f}")
+    print(f"\nRatio idf1/idf2 = {idf1 / idf2:.2f}")
+    print(f"Ratio idf1²/idf2² = {(idf1**2) / (idf2**2):.2f}")
 
     print("\n" + "-" * 70)
     print("Document comparison:")
@@ -49,7 +49,9 @@ def analyze_idf_squared_effect():
     # Simplified TF (ignore length normalization for clarity)
     k1 = 1.5
 
-    print(f"\n{'Doc':<10} {'tf1':>5} {'tf2':>5} | {'Correct BM25':>14} | {'IDF² BM25':>12} | {'Winner':>10}")
+    print(
+        f"\n{'Doc':<10} {'tf1':>5} {'tf2':>5} | {'Correct BM25':>14} | {'IDF² BM25':>12} | {'Winner':>10}"
+    )
     print("-" * 70)
 
     correct_scores = []
@@ -149,7 +151,9 @@ def analyze_actual_gensim_behavior():
             d_weight = doc_vec.get(term_id, 0.0)
             score += q_weight * d_weight
             if d_weight > 0:
-                print(f"    Doc {i}, term '{dictionary[term_id]}': q_weight={q_weight:.4f} × d_weight={d_weight:.4f} = {q_weight * d_weight:.4f}")
+                print(
+                    f"    Doc {i}, term '{dictionary[term_id]}': q_weight={q_weight:.4f} × d_weight={d_weight:.4f} = {q_weight * d_weight:.4f}"
+                )
 
         print(f"  Doc {i} total score: {score:.4f}")
 
@@ -174,13 +178,19 @@ def analyze_actual_gensim_behavior():
             # Correct IDF and TF
             idf = np.log((N - df + 0.5) / (df + 0.5))
             if idf < 0:
-                idf = 0.25 * np.mean([np.log((N - dictionary.dfs[t] + 0.5) / (dictionary.dfs[t] + 0.5))
-                                       for t in dictionary.token2id.values()])
+                idf = 0.25 * np.mean(
+                    [
+                        np.log((N - dictionary.dfs[t] + 0.5) / (dictionary.dfs[t] + 0.5))
+                        for t in dictionary.token2id.values()
+                    ]
+                )
             tf_sat = (tf * (k1 + 1)) / (tf + k1 * norm)
 
             term_score = idf * tf_sat
             if tf > 0:
-                print(f"    Doc {i}, term '{term}': IDF={idf:.4f} × TF_sat={tf_sat:.4f} = {term_score:.4f}")
+                print(
+                    f"    Doc {i}, term '{term}': IDF={idf:.4f} × TF_sat={tf_sat:.4f} = {term_score:.4f}"
+                )
             score += term_score
 
         print(f"  Doc {i} correct score: {score:.4f}")
@@ -236,7 +246,7 @@ This means TF_query can be >> 1, massively boosting the query weight.
     query_bow = dictionary.doc2bow(query)
     query_vec = model[query_bow]
 
-    print(f"\nCorpus avgdl = 100 (10 docs with 100 words each)")
+    print("\nCorpus avgdl = 100 (10 docs with 100 words each)")
     print(f"Query: {query} (length=1)")
     print(f"\nQuery BM25 vector: {query_vec}")
 
@@ -256,10 +266,10 @@ This means TF_query can be >> 1, massively boosting the query weight.
         tf_query = (1 * (k1 + 1)) / (1 + k1 * norm)
 
         expected = idf * tf_query
-        print(f"\nBreakdown:")
+        print("\nBreakdown:")
         print(f"  IDF = {idf:.4f}")
         print(f"  norm = 1 - {b} + {b} × (1/{avgdl}) = {norm:.4f}")
-        print(f"  TF_query = (1 × {k1+1}) / (1 + {k1} × {norm:.4f}) = {tf_query:.4f}")
+        print(f"  TF_query = (1 × {k1 + 1}) / (1 + {k1} × {norm:.4f}) = {tf_query:.4f}")
         print(f"  Expected query weight = IDF × TF_query = {expected:.4f}")
 
         print(f"\n⚠️  TF_query = {tf_query:.2f} >> 1 because query is much shorter than avgdl!")

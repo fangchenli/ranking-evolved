@@ -11,8 +11,8 @@ import argparse
 import importlib.util
 import json
 import random
-from functools import lru_cache, cache
-from typing import Callable, Tuple, Type
+from collections.abc import Callable
+from functools import cache
 
 import numpy as np
 from datasets import load_dataset
@@ -45,7 +45,7 @@ BRIGHT_SPLITS = [
 
 def _load_candidate(
     program_path: str,
-) -> Tuple[type, Callable[[str], list[str]], Type]:
+) -> tuple[type, Callable[[str], list[str]], type]:
     """Dynamically load a BM25 implementation, tokenizer, and Corpus from a file path."""
     spec = importlib.util.spec_from_file_location("candidate_bm25", program_path)
     if spec is None or spec.loader is None:
@@ -122,7 +122,7 @@ def evaluate_with_sampling(
         rr_scores = []
         ap_scores = []
 
-        for raw_query, gold in zip(raw_queries, gold_indices):
+        for raw_query, gold in zip(raw_queries, gold_indices, strict=False):
             query_tokens = tokenize_fn(raw_query)
             ranked_indices, _ = bm25.rank(query_tokens)
 

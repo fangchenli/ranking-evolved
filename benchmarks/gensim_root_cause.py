@@ -16,8 +16,8 @@ def main():
     # Small corpus where some terms have IDF exactly 0
     docs = [
         ["the", "quick", "brown", "fox"],  # doc 0
-        ["the", "lazy", "brown", "dog"],   # doc 1
-        ["fox", "and", "dog", "play"],     # doc 2
+        ["the", "lazy", "brown", "dog"],  # doc 1
+        ["fox", "and", "dog", "play"],  # doc 2
         ["brown", "bread", "is", "good"],  # doc 3
     ]
 
@@ -25,6 +25,7 @@ def main():
 
     # Calculate document frequencies
     from collections import Counter
+
     df = Counter()
     for doc in docs:
         df.update(set(doc))
@@ -42,7 +43,7 @@ def main():
     # For N=4, df=2 gives IDF = log((4-2+0.5)/(2+0.5)) = log(2.5/2.5) = 0
     print(f"\nFor N={N}:")
     print(f"  df=2: IDF = log(({N}-2+0.5)/(2+0.5)) = log(2.5/2.5) = 0")
-    print(f"\n  'brown' appears in 4/4 docs but...")
+    print("\n  'brown' appears in 4/4 docs but...")
 
     # Recalculate
     brown_df = df["brown"]
@@ -116,7 +117,9 @@ Let me verify by looking at what happens during transformation...
         tf_sat = (tf * (1.5 + 1)) / (tf + 1.5 * norm)
         weight = stored_idf * tf_sat
 
-        print(f"  '{term}': tf={tf}, raw_idf={raw_idf:.4f}, stored_idf={stored_idf:.4f}, tf_sat={tf_sat:.4f}, weight={weight:.4f}")
+        print(
+            f"  '{term}': tf={tf}, raw_idf={raw_idf:.4f}, stored_idf={stored_idf:.4f}, tf_sat={tf_sat:.4f}, weight={weight:.4f}"
+        )
 
     print("\n" + "=" * 70)
     print("IMPACT ON RETRIEVAL")
@@ -160,7 +163,10 @@ Let me verify by looking at what happens during transformation...
     query_vec_dict = dict(query_vec)
     for i, doc_bow in enumerate(bow_corpus):
         doc_vec = dict(model[doc_bow])
-        score = sum(query_vec_dict.get(tid, 0) * doc_vec.get(tid, 0) for tid in set(query_vec_dict) | set(doc_vec))
+        score = sum(
+            query_vec_dict.get(tid, 0) * doc_vec.get(tid, 0)
+            for tid in set(query_vec_dict) | set(doc_vec)
+        )
         print(f"Doc {i}: score={score:.4f}")
 
     print("\n" + "=" * 70)

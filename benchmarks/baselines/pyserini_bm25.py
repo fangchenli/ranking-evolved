@@ -54,7 +54,6 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import shutil
 import tempfile
 from pathlib import Path
@@ -512,7 +511,6 @@ def evaluate_pyserini_on_bright_raw(
 
 
 if __name__ == "__main__":
-    import json
 
     if check_java_available():
         print("Evaluating Pyserini BM25 on BRIGHT (biology domain)...")

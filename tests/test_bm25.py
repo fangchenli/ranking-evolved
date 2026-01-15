@@ -1,8 +1,8 @@
-from datasets import load_dataset
 import numpy as np
 import pytest
+from datasets import load_dataset
 
-from ranking_evolved.bm25 import Corpus, BM25, tokenize
+from ranking_evolved.bm25 import BM25, Corpus, tokenize
 from ranking_evolved.metrics import ndcg_at_k
 
 
@@ -47,7 +47,7 @@ def test_bright_biology(bright_biology):
     bm25 = BM25(corpus)
 
     ndcg_at_10_scores = []
-    for query, gold in zip(queries, expected):
+    for query, gold in zip(queries, expected, strict=False):
         ranked_indices, _ = bm25.rank(query)
         ndcg_at_10 = ndcg_at_k(np.array(gold), ranked_indices, k=10)
         ndcg_at_10_scores.append(ndcg_at_10)

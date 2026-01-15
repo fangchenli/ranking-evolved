@@ -36,14 +36,18 @@ def main():
         df = dictionary.dfs[term_id]
         # Classic IDF
         classic_idf = np.log((N - df + 0.5) / (df + 0.5))
-        print(f"  '{term}': classic_idf = log(({N} - {df} + 0.5) / ({df} + 0.5)) = {classic_idf:.4f}")
+        print(
+            f"  '{term}': classic_idf = log(({N} - {df} + 0.5) / ({df} + 0.5)) = {classic_idf:.4f}"
+        )
 
     print("\nTerms with negative IDF (df > N/2):")
     for term, term_id in dictionary.token2id.items():
         df = dictionary.dfs[term_id]
         classic_idf = np.log((N - df + 0.5) / (df + 0.5))
         if classic_idf < 0:
-            print(f"  '{term}': df={df}, IDF={classic_idf:.4f} (appears in {df}/{N} = {df/N*100:.0f}% of docs)")
+            print(
+                f"  '{term}': df={df}, IDF={classic_idf:.4f} (appears in {df}/{N} = {df / N * 100:.0f}% of docs)"
+            )
 
     # Now create the model and look at what it computes
     model = OkapiBM25Model(corpus=bow_corpus, dictionary=dictionary, k1=1.5, b=0.75, epsilon=0.25)
