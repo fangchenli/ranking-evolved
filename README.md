@@ -367,9 +367,11 @@ Lucene 8.0+ removed the `(k1+1)` factor from the TF numerator for performance (s
 | Our BM25 (classic TF) | 0.1872 | Lucene tokenizer, k1=0.9, b=0.4 |
 | Pyserini/Anserini | 0.1810 | Reference Lucene implementation |
 | Our BM25 (pyserini-style) | 0.1719 | Lucene tokenizer, query_mode=sum_all |
-| Gensim OkapiBM25 | 0.0900 | Vector-space IDF² issue + IDF clamping |
-| Gensim LuceneBM25 | 0.0845 | Vector-space IDF² issue + missing (k1+1) in TF |
+| Gensim OkapiBM25 | 0.0900 | Vector-space IDF² issue + IDF clamping (cross-verified) |
+| Gensim LuceneBM25 | 0.0845 | Vector-space IDF² issue + missing (k1+1) in TF (cross-verified) |
 | Gensim AtireBM25 | 0.0838 | Vector-space IDF² issue |
+
+**Cross-Verification:** We reimplemented Gensim's exact BM25 logic from scratch and verified our reimplementation produces identical scores to actual Gensim (see `benchmarks/gensim_reimplementation.py`).
 
 **Why Gensim BM25 underperforms:**
 
