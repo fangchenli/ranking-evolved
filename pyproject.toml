@@ -1,7 +1,7 @@
 [project]
 name = "ranking-evolved"
 version = "0.1.0"
-description = "Add your description here"
+description = "BM25 ranking experiments with evolution via OpenEvolve"
 readme = "README.md"
 authors = [
     { name = "Fangchen Li", email = "fangchen.li@outlook.com" }
@@ -10,8 +10,8 @@ requires-python = ">=3.11"
 dependencies = [
     "datasets>=4.0.0",
     "numpy>=2.3.1",
+    "scipy>=1.14.0",
     "openevolve==0.2.22",
-    "matplotlib>=3.9.0",
 ]
 
 [build-system]
@@ -23,9 +23,26 @@ dev = [
     "mypy>=1.16.1",
     "pytest>=8.4.1",
     "ruff>=0.12.1",
-    "gensim>=4.3.0",
 ]
 
+benchmark = [
+    "pandas>=2.2.0",
+    "gensim>=4.3.0",
+    "pyserini>=0.25.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_ignores = true

@@ -11,7 +11,7 @@ import argparse
 import importlib.util
 import json
 import random
-from functools import lru_cache
+from functools import lru_cache, cache
 from typing import Callable, Tuple, Type
 
 import numpy as np
@@ -66,7 +66,7 @@ def _load_candidate(
     return module.BM25, module.tokenize, module.Corpus
 
 
-@lru_cache(maxsize=None)
+@cache
 def _bright_raw(domain: str):
     """Load raw BRIGHT documents and examples for a given domain."""
     documents = load_dataset("xlangai/BRIGHT", "documents", split=domain)
@@ -76,9 +76,7 @@ def _bright_raw(domain: str):
 
 def evaluate(program_path: str, k: int = 10) -> dict[str, float]:
     """Evaluate a BM25 implementation against BRIGHT biology with multiple metrics."""
-    return evaluate_with_sampling(
-        program_path, k=k, sample_queries=None, seed=42, domain="biology"
-    )
+    return evaluate_with_sampling(program_path, k=k, sample_queries=None, seed=42, domain="biology")
 
 
 def evaluate_with_sampling(
@@ -148,9 +146,7 @@ def evaluate_with_sampling(
             "recall_at_k": float(np.mean(recall_scores)),
             "ndcg_at_k": float(np.mean(ndcg_scores)),
             "reciprocal_rank": float(np.mean(rr_scores)),
-            "mean_average_precision": mean_average_precision(
-                all_relevant, all_retrieved
-            ),
+            "mean_average_precision": mean_average_precision(all_relevant, all_retrieved),
             "mean_reciprocal_rank": mean_reciprocal_rank(all_relevant, all_retrieved),
             "k": k,
             "queries": len(all_relevant),

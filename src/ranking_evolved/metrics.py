@@ -81,7 +81,7 @@ def mean_average_precision(
         return 0.0
 
     ap_scores = [
-        average_precision(rel, ret) for rel, ret in zip(all_relevant, all_retrieved)
+        average_precision(rel, ret) for rel, ret in zip(all_relevant, all_retrieved, strict=False)
     ]
     return float(np.mean(ap_scores))
 
@@ -100,9 +100,7 @@ def ndcg_at_k(relevant: np.ndarray, retrieved: np.ndarray, k: int) -> float:
     """
     retrieved_at_k = retrieved[:k]
     gains = [1 if doc in relevant else 0 for doc in retrieved_at_k]
-    discounts = [
-        np.log2(i + 2) for i in range(len(gains))
-    ]  # i + 2 because log2(1+1)=1 for i=0
+    discounts = [np.log2(i + 2) for i in range(len(gains))]  # i + 2 because log2(1+1)=1 for i=0
     dcg = np.sum(np.array(gains) / np.array(discounts))
 
     # Compute ideal DCG
@@ -132,9 +130,7 @@ def reciprocal_rank(relevant: np.ndarray, retrieved: np.ndarray) -> float:
     return 0.0
 
 
-def mean_reciprocal_rank(
-    all_relevant: list[np.ndarray], all_retrieved: list[np.ndarray]
-) -> float:
+def mean_reciprocal_rank(all_relevant: list[np.ndarray], all_retrieved: list[np.ndarray]) -> float:
     """
     Computes Mean Reciprocal Rank (MRR) over multiple queries.
 
@@ -149,6 +145,6 @@ def mean_reciprocal_rank(
         return 0.0
 
     rr_scores = [
-        reciprocal_rank(rel, ret) for rel, ret in zip(all_relevant, all_retrieved)
+        reciprocal_rank(rel, ret) for rel, ret in zip(all_relevant, all_retrieved, strict=False)
     ]
     return float(np.mean(rr_scores))
