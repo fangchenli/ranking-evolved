@@ -367,15 +367,23 @@ Lucene 8.0+ removed the `(k1+1)` factor from the TF numerator for performance (s
 | Our BM25 (classic TF) | 0.1872 | Lucene tokenizer, k1=0.9, b=0.4 |
 | Pyserini/Anserini | 0.1810 | Reference Lucene implementation |
 | Our BM25 (pyserini-style) | 0.1719 | Lucene tokenizer, query_mode=sum_all |
-| Gensim OkapiBM25 | 0.0900 | Squared IDF bug + aggressive clamping |
-| Gensim LuceneBM25 | 0.0845 | Wrong IDF formula + missing (k1+1) |
-| Gensim AtireBM25 | 0.0838 | Squared IDF bug |
+| Gensim OkapiBM25 | 0.0900 | Vector-space IDF² issue + IDF clamping |
+| Gensim LuceneBM25 | 0.0845 | Vector-space IDF² issue + missing (k1+1) in TF |
+| Gensim AtireBM25 | 0.0838 | Vector-space IDF² issue |
 
-**Warning:** Gensim's BM25 models have fundamental implementation bugs:
-- Vector-space approach squares the IDF contribution (`query_vec · doc_vec` = IDF² × TF)
-- LuceneBM25Model uses wrong IDF formula and missing (k1+1) in TF
-- OkapiBM25Model clamps negative IDF too aggressively
-- See [bm25_formulas.md](references/bm25_formulas.md) for detailed analysis
+**Why Gensim BM25 underperforms:**
+
+Gensim's BM25 models use a vector-space approach where both query and document are represented as BM25-weighted vectors, and scoring uses dot product: `score = query_vec · doc_vec`. This fundamentally changes the scoring semantics:
+
+1. **IDF² effect**: Since both vectors contain `IDF × TF` weights, the dot product computes `Σ (IDF × TF_q) × (IDF × TF_d) = Σ IDF² × TF_q × TF_d`. This squares the IDF contribution, over-weighting rare terms.
+
+2. **LuceneBM25Model missing (k1+1)**: Uses `tf / (tf + k1 * norm)` instead of `tf * (k1+1) / (tf + k1 * norm)`, reducing scores by 2.5x (for k1=1.5). Note: The IDF formula is actually correct.
+
+3. **OkapiBM25Model IDF clamping**: Clamps negative IDF to `epsilon × avg_idf` (default ε=0.25), which over-weights very common terms like "the" and "of".
+
+Run verification: `uv run python -m benchmarks.verify_gensim_formulas`
+
+See [bm25_formulas.md](references/bm25_formulas.md) for detailed formula analysis.
 
 ## Full BRIGHT Evaluation (Evolved BM25, k=10)
 

@@ -265,22 +265,22 @@ The `(k1 + 1)` factor scales the TF component. Without it, for k1=1.5 and tf=1:
 
 This reduces scores by ~60%, severely impacting ranking quality.
 
-### Bug 3: Wrong IDF formula in Gensim LuceneBM25Model
+### Note: Gensim LuceneBM25Model IDF is actually correct
 
-Gensim's `LuceneBM25Model` (as of v4.3) uses an incorrect IDF formula:
-
-**Gensim (wrong):**
+Gensim's `LuceneBM25Model` uses:
 ```python
 idf = log(N + 1) - log(df + 0.5)
     = log((N + 1) / (df + 0.5))
 ```
 
-**Correct Lucene:**
+This is mathematically equivalent to the correct Lucene formula:
 ```python
 idf = log(1 + (N - df + 0.5) / (df + 0.5))
+    = log((df + 0.5 + N - df + 0.5) / (df + 0.5))
+    = log((N + 1) / (df + 0.5))
 ```
 
-Gensim uses `N + 1` in the numerator instead of `N - df + 0.5`.
+**The IDF formula is correct.** The main issue with Gensim's LuceneBM25Model is the missing `(k1+1)` factor in the TF component (Bug 2 above).
 
 ### Bug 4: Gensim's vector-space approach is fundamentally wrong for BM25
 

@@ -16,7 +16,8 @@ Note: These wrappers use scipy sparse matrix dot product instead of Gensim's
 SparseMatrixSimilarity (which incorrectly uses cosine similarity).
 
 Known Gensim issues:
-- LuceneBM25Model: Wrong IDF formula + missing (k1+1) in TF
+- Vector-space approach: dot product squares IDF contribution (IDF² × TF)
+- LuceneBM25Model: Missing (k1+1) in TF numerator (IDF formula is correct)
 - OkapiBM25Model: Clamps negative IDF to epsilon*avg_idf (over-weights common terms)
 
 Usage:
@@ -269,10 +270,11 @@ class GensimLuceneBM25Baseline:
     """
     Wrapper around Gensim's LuceneBM25Model for benchmarking.
 
-    WARNING: LuceneBM25Model has implementation bugs:
-    - Wrong IDF: uses log((N+1)/(df+0.5)) instead of log(1+(N-df+0.5)/(df+0.5))
+    WARNING: LuceneBM25Model has an implementation issue:
     - Missing (k1+1) in TF: uses tf/(tf+k1*norm) instead of tf*(k1+1)/(tf+k1*norm)
+    - Note: The IDF formula is actually correct (mathematically equivalent to Lucene)
 
+    Additionally, the vector-space approach (query_vec · doc_vec) squares the IDF.
     This wrapper is provided for comparison purposes only.
     """
 
