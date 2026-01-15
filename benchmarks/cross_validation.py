@@ -29,9 +29,9 @@ import numpy as np
 from datasets import load_dataset
 
 from ranking_evolved.bm25 import (
+    BM25Config,
+    BM25Unified,
     Corpus,
-    create_bm25_lucene,
-    create_bm25_pyserini_style,
     tokenize as simple_tokenize,
 )
 from ranking_evolved.metrics import (
@@ -57,51 +57,16 @@ def get_lucene_tokenizer() -> Callable[[str], list[str]]:
         )
 
 
-def evaluate_our_bm25(
+def evaluate_bm25_unified(
     corpus: Corpus,
     queries: list[str],
     gold_indices: list[list[int]],
     tokenizer: Callable[[str], list[str]],
-    k1: float,
-    b: float,
+    config: BM25Config,
     k: int = 10,
 ) -> dict:
-    """Evaluate our BM25 implementation (bag-of-words, unique query terms)."""
-    bm25 = create_bm25_lucene(corpus, k1=k1, b=b)
-
-    ndcg_scores = []
-    all_relevant = []
-    all_retrieved = []
-
-    for query_text, gold in zip(queries, gold_indices, strict=False):
-        query_tokens = tokenizer(query_text)
-        ranked_indices, _ = bm25.rank(query_tokens)
-
-        relevant = np.array(gold, dtype=np.int64)
-        retrieved = np.array(ranked_indices, dtype=np.int64)
-
-        all_relevant.append(relevant)
-        all_retrieved.append(retrieved)
-        ndcg_scores.append(ndcg_at_k(relevant, retrieved, k))
-
-    return {
-        "ndcg_at_k": float(np.mean(ndcg_scores)),
-        "map": mean_average_precision(all_relevant, all_retrieved),
-        "mrr": mean_reciprocal_rank(all_relevant, all_retrieved),
-    }
-
-
-def evaluate_our_bm25_pyserini_style(
-    corpus: Corpus,
-    queries: list[str],
-    gold_indices: list[list[int]],
-    tokenizer: Callable[[str], list[str]],
-    k1: float,
-    b: float,
-    k: int = 10,
-) -> dict:
-    """Evaluate our BM25 with Pyserini-style query term counting (sum over all occurrences)."""
-    bm25 = create_bm25_pyserini_style(corpus, k1=k1, b=b)
+    """Evaluate BM25Unified with a specific configuration."""
+    bm25 = BM25Unified(corpus, config)
 
     ndcg_scores = []
     all_relevant = []
@@ -230,16 +195,27 @@ def run_cross_validation(domain: str = "biology", k: int = 10) -> dict:
 
     results = {"domain": domain, "k": k, "num_queries": len(queries)}
 
-    # 1. Our BM25 with simple tokenization
+    # 1. Our BM25 with simple tokenization - Classic TF
     print("Building corpus with simple tokenization...")
     corpus_simple = Corpus.from_huggingface_dataset(documents)
     gold_indices_simple = [corpus_simple.id_to_idx(ids) for ids in gold_id_lists]
 
-    for k1, b in [(1.5, 0.75), (1.2, 0.75), (0.9, 0.4)]:
-        key = f"our_simple_k1={k1}_b={b}"
+    # Test classic TF with simple tokenization
+    for k1, b in [(0.9, 0.4), (1.2, 0.75), (1.5, 0.75)]:
+        config = BM25Config(idf="lucene", tf="classic", query_mode="unique", k1=k1, b=b)
+        key = f"simple_classic_k1={k1}_b={b}"
         print(f"Evaluating {key}...")
-        results[key] = evaluate_our_bm25(
-            corpus_simple, queries, gold_indices_simple, simple_tokenize, k1, b, k
+        results[key] = evaluate_bm25_unified(
+            corpus_simple, queries, gold_indices_simple, simple_tokenize, config, k
+        )
+
+    # Test evolved TF with simple tokenization
+    for k1, b in [(0.9, 0.4), (1.5, 0.75)]:
+        config = BM25Config(idf="lucene", tf="evolved", query_mode="unique", k1=k1, b=b)
+        key = f"simple_evolved_k1={k1}_b={b}"
+        print(f"Evaluating {key}...")
+        results[key] = evaluate_bm25_unified(
+            corpus_simple, queries, gold_indices_simple, simple_tokenize, config, k
         )
 
     # 2. Try Lucene tokenization if available
@@ -251,24 +227,35 @@ def run_cross_validation(domain: str = "biology", k: int = 10) -> dict:
         corpus_lucene = Corpus(tokenized_docs_lucene, doc_ids)
         gold_indices_lucene = [corpus_lucene.id_to_idx(ids) for ids in gold_id_lists]
 
-        for k1, b in [(0.9, 0.4), (1.2, 0.75), (1.5, 0.75)]:
-            key = f"our_lucene_k1={k1}_b={b}"
-            print(f"Evaluating {key}...")
-            results[key] = evaluate_our_bm25(
-                corpus_lucene, queries, gold_indices_lucene, tokenize_lucene, k1, b, k
-            )
-
-        # 3. Our BM25 with Pyserini-style query term counting
-        # This should match Pyserini's behavior if the gap is due to query term counting
+        # Test classic TF with Lucene tokenization
         for k1, b in [(0.9, 0.4), (1.2, 0.75)]:
-            key = f"our_pyserini_style_k1={k1}_b={b}"
+            config = BM25Config(idf="lucene", tf="classic", query_mode="unique", k1=k1, b=b)
+            key = f"lucene_classic_k1={k1}_b={b}"
             print(f"Evaluating {key}...")
-            results[key] = evaluate_our_bm25_pyserini_style(
-                corpus_lucene, queries, gold_indices_lucene, tokenize_lucene, k1, b, k
+            results[key] = evaluate_bm25_unified(
+                corpus_lucene, queries, gold_indices_lucene, tokenize_lucene, config, k
             )
 
-        # 4. Pyserini with raw text
-        for k1, b in [(0.9, 0.4), (1.2, 0.75), (1.5, 0.75)]:
+        # Test evolved TF with Lucene tokenization
+        for k1, b in [(0.9, 0.4), (1.5, 0.75)]:
+            config = BM25Config(idf="lucene", tf="evolved", query_mode="unique", k1=k1, b=b)
+            key = f"lucene_evolved_k1={k1}_b={b}"
+            print(f"Evaluating {key}...")
+            results[key] = evaluate_bm25_unified(
+                corpus_lucene, queries, gold_indices_lucene, tokenize_lucene, config, k
+            )
+
+        # Test Pyserini-style (sum_all) with Lucene tokenization
+        for k1, b in [(0.9, 0.4)]:
+            config = BM25Config(idf="lucene", tf="classic", query_mode="sum_all", k1=k1, b=b)
+            key = f"lucene_pyserini_style_k1={k1}_b={b}"
+            print(f"Evaluating {key}...")
+            results[key] = evaluate_bm25_unified(
+                corpus_lucene, queries, gold_indices_lucene, tokenize_lucene, config, k
+            )
+
+        # 3. Pyserini with raw text (reference implementation)
+        for k1, b in [(0.9, 0.4), (1.2, 0.75)]:
             key = f"pyserini_raw_k1={k1}_b={b}"
             print(f"Evaluating {key}...")
             results[key] = evaluate_pyserini_raw(
@@ -283,21 +270,26 @@ def run_cross_validation(domain: str = "biology", k: int = 10) -> dict:
 
 def print_results(results: dict) -> None:
     """Print results in a formatted table."""
-    print("\n" + "=" * 70)
+    print("\n" + "=" * 80)
     print(f"CROSS-VALIDATION RESULTS: {results['domain']} Domain")
-    print("=" * 70)
-    print(f"{'Implementation':<40} {'NDCG@10':>10} {'MAP':>10} {'MRR':>10}")
-    print("-" * 70)
+    print("=" * 80)
+    print(f"{'Implementation':<45} {'NDCG@10':>10} {'MAP':>10} {'MRR':>10}")
+    print("-" * 80)
 
-    for key, value in results.items():
-        if key in ("domain", "k", "num_queries"):
-            continue
-        if isinstance(value, dict) and "ndcg_at_k" in value:
-            print(
-                f"{key:<40} {value['ndcg_at_k']:>10.4f} {value['map']:>10.4f} {value['mrr']:>10.4f}"
-            )
+    # Sort by NDCG descending
+    items = [
+        (key, value)
+        for key, value in results.items()
+        if isinstance(value, dict) and "ndcg_at_k" in value
+    ]
+    items.sort(key=lambda x: x[1]["ndcg_at_k"], reverse=True)
 
-    print("-" * 70)
+    for key, value in items:
+        print(
+            f"{key:<45} {value['ndcg_at_k']:>10.4f} {value['map']:>10.4f} {value['mrr']:>10.4f}"
+        )
+
+    print("-" * 80)
     print(f"Queries: {results['num_queries']}")
 
 
