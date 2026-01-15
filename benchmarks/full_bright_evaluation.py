@@ -5,12 +5,18 @@ Evaluates BM25Unified with lucene IDF + evolved TF (k1=0.9, b=0.4) across all
 BRIGHT domains and produces a comprehensive results table.
 
 Usage:
+    # With simple tokenizer (default)
     uv run python -m benchmarks.full_bright_evaluation
+
+    # With Lucene tokenizer (requires Java 21 + Pyserini)
+    uv run python -m benchmarks.full_bright_evaluation --lucene
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -24,6 +30,23 @@ from ranking_evolved.metrics import (
     precision_at_k,
     recall_at_k,
 )
+
+
+def get_lucene_tokenizer() -> Callable[[str], list[str]]:
+    """Get Lucene tokenizer via Pyserini (requires Java 21)."""
+    try:
+        from pyserini.analysis import Analyzer, get_lucene_analyzer
+
+        lucene_analyzer = Analyzer(get_lucene_analyzer())
+        return lucene_analyzer.analyze
+    except ImportError:
+        raise ImportError(
+            "Pyserini is required for Lucene tokenization.\n"
+            "Install with: uv sync --group benchmark\n"
+            "Also requires Java 21:\n"
+            "  export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home\n"
+            "  export JVM_PATH=$JAVA_HOME/lib/server/libjvm.dylib"
+        )
 
 BRIGHT_SPLITS = [
     "biology",
@@ -56,13 +79,31 @@ class DomainResult:
     combined: float
 
 
-def evaluate_domain(domain: str, config: BM25Config, k: int = 10) -> DomainResult:
+def evaluate_domain(
+    domain: str,
+    config: BM25Config,
+    tokenizer_fn: Callable[[str], list[str]],
+    k: int = 10,
+) -> DomainResult:
     """Evaluate BM25 on a single BRIGHT domain."""
     print(f"  Loading {domain}...")
     documents = load_dataset("xlangai/BRIGHT", "documents", split=domain)
     examples = load_dataset("xlangai/BRIGHT", "examples", split=domain)
 
-    corpus = Corpus.from_huggingface_dataset(documents)
+    # Build corpus with the specified tokenizer
+    raw_texts = []
+    doc_ids = []
+    for doc in documents:
+        content = doc.get("content") or doc.get("text") or ""
+        doc_id = doc.get("id") or doc.get("_id")
+        raw_texts.append(content)
+        doc_ids.append(doc_id)
+
+    # Tokenize documents
+    print(f"  Tokenizing {len(raw_texts)} documents...")
+    tokenized_docs = [tokenizer_fn(text) for text in raw_texts]
+    corpus = Corpus(tokenized_docs, ids=doc_ids)
+
     bm25 = BM25Unified(corpus, config)
 
     queries = [example["query"] for example in examples]
@@ -78,7 +119,7 @@ def evaluate_domain(domain: str, config: BM25Config, k: int = 10) -> DomainResul
     all_retrieved = []
 
     for query_text, gold in zip(queries, gold_indices, strict=False):
-        query_tokens = tokenize(query_text)
+        query_tokens = tokenizer_fn(query_text)
         ranked_indices, _ = bm25.rank(query_tokens)
 
         relevant = np.array(gold, dtype=np.int64)
@@ -112,9 +153,27 @@ def evaluate_domain(domain: str, config: BM25Config, k: int = 10) -> DomainResul
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Full BRIGHT evaluation with best BM25 config")
+    parser.add_argument(
+        "--lucene",
+        action="store_true",
+        help="Use Lucene tokenizer (requires Java 21 + Pyserini)",
+    )
+    args = parser.parse_args()
+
     print("=" * 70)
     print("FULL BRIGHT EVALUATION")
     print("=" * 70)
+
+    # Select tokenizer
+    if args.lucene:
+        print("\nUsing Lucene tokenizer (via Pyserini)")
+        tokenizer_fn = get_lucene_tokenizer()
+        tokenizer_name = "Lucene"
+    else:
+        print("\nUsing simple whitespace tokenizer")
+        tokenizer_fn = tokenize
+        tokenizer_name = "Simple"
 
     # Our best configuration
     config = BM25Config(
@@ -126,7 +185,8 @@ def main():
     )
     k = 10
 
-    print(f"\nConfiguration: {config}")
+    print(f"Configuration: {config}")
+    print(f"Tokenizer: {tokenizer_name}")
     print(f"k = {k}")
     print()
 
@@ -134,7 +194,7 @@ def main():
 
     for i, domain in enumerate(BRIGHT_SPLITS):
         print(f"[{i + 1}/{len(BRIGHT_SPLITS)}] {domain}")
-        result = evaluate_domain(domain, config, k)
+        result = evaluate_domain(domain, config, tokenizer_fn, k)
         results.append(result)
         print(f"  NDCG@{k}: {result.ndcg_at_k:.4f}, MAP: {result.map:.4f}, MRR: {result.mrr:.4f}")
         print()
@@ -198,12 +258,13 @@ def main():
     # Save JSON results
     json_results = {
         "config": {
-            "idf": str(config.idf),
-            "tf": str(config.tf),
-            "query_mode": str(config.query_mode),
+            "idf": type(config.idf_strategy).__name__,
+            "tf": type(config.tf_strategy).__name__,
+            "query_mode": config.query_mode.value,
             "k1": config.k1,
             "b": config.b,
             "k": k,
+            "tokenizer": tokenizer_name,
         },
         "domains": [
             {

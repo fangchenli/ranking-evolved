@@ -389,7 +389,7 @@ Run verification: `uv run python -m benchmarks.gensim_root_cause`
 
 See [bm25_formulas.md](references/bm25_formulas.md) for detailed formula analysis.
 
-## Full BRIGHT Evaluation (Best Config: Lucene IDF + Evolved TF, k1=0.9, b=0.4)
+## Full BRIGHT Evaluation (Simple Tokenizer)
 
 | Split | Queries | Docs | Combined | P@10 | R@10 | NDCG@10 | MAP | MRR |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -408,6 +408,35 @@ See [bm25_formulas.md](references/bm25_formulas.md) for detailed formula analysi
 | **macro avg** | 1384 | 1333166 | **0.1245** | 0.0576 | 0.1454 | **0.1284** | 0.1015 | 0.1894 |
 
 Run evaluation: `uv run python -m benchmarks.full_bright_evaluation`
+
+## Full BRIGHT Evaluation (Lucene Tokenizer)
+
+Using Lucene tokenizer via Pyserini (requires Java 21):
+
+| Split | Queries | Docs | Combined | P@10 | R@10 | NDCG@10 | MAP | MRR |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| biology | 103 | 57359 | 0.2393 | 0.0874 | 0.2758 | 0.2524 | 0.2036 | 0.3772 |
+| earth_science | 116 | 121249 | 0.3252 | 0.1388 | 0.3817 | 0.3493 | 0.2884 | 0.4678 |
+| economics | 103 | 50220 | 0.1267 | 0.0563 | 0.1495 | 0.1362 | 0.1083 | 0.1830 |
+| psychology | 101 | 52835 | 0.1041 | 0.0455 | 0.1408 | 0.1053 | 0.0846 | 0.1441 |
+| robotics | 101 | 61961 | 0.1086 | 0.0436 | 0.1474 | 0.1073 | 0.0882 | 0.1565 |
+| stackoverflow | 117 | 107081 | 0.1859 | 0.0838 | 0.2207 | 0.1995 | 0.1623 | 0.2634 |
+| sustainable_living | 108 | 60792 | 0.1482 | 0.0565 | 0.2048 | 0.1540 | 0.1243 | 0.2016 |
+| pony | 112 | 7894 | 0.1075 | 0.0946 | 0.0516 | 0.0937 | 0.0715 | 0.2261 |
+| leetcode | 142 | 413932 | 0.1238 | 0.0458 | 0.2230 | 0.1299 | 0.0939 | 0.1267 |
+| aops | 111 | 188002 | 0.0322 | 0.0198 | 0.0430 | 0.0287 | 0.0180 | 0.0515 |
+| theoremqa_theorems | 76 | 23839 | 0.0511 | 0.0118 | 0.0768 | 0.0543 | 0.0476 | 0.0648 |
+| theoremqa_questions | 194 | 188002 | 0.0574 | 0.0175 | 0.0842 | 0.0604 | 0.0553 | 0.0694 |
+| **macro avg** | 1384 | 1333166 | **0.1342** | 0.0585 | 0.1666 | **0.1392** | 0.1122 | 0.1943 |
+
+**Improvement over simple tokenizer:** NDCG@10 0.1284 → 0.1392 (+8.4%)
+
+Run evaluation:
+```bash
+export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
+export JVM_PATH=$JAVA_HOME/lib/server/libjvm.dylib
+uv run python -m benchmarks.full_bright_evaluation --lucene
+```
 
 ## Evolution History
 
