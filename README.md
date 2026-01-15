@@ -285,6 +285,14 @@ $$\text{Score}(d, q) = \sum_{t \in \text{unique}(q)} \text{IDF}(t) \cdot \log(1 
 
 **Parameters:** $k_1 = 1.5$, $b = 0.75$
 
+**Variable definitions:**
+
+- $tf$ — Raw term frequency: the number of times term $t$ appears in document $d$
+- $\text{norm}$ — Length normalization factor: adjusts for document length relative to average. When $|d| = \text{avgdl}$, norm = 1. Shorter docs get norm < 1 (boosted), longer docs get norm > 1 (penalized).
+- $tf_{raw}$ — Standard BM25 TF saturation: the classic Robertson TF formula that maps raw term frequency to a saturated score. As $tf \to \infty$, $tf_{raw} \to (k_1 + 1)$. This prevents very high term frequencies from dominating the score.
+- $tf_{sat}$ — Additional saturation factor (evolved innovation): provides a second layer of diminishing returns. As $tf \to \infty$, $tf_{sat} \to 1$. The product $tf_{raw} \cdot tf_{sat}$ is then log-damped, giving more conservative scores for high-frequency terms.
+- $qtf$ — Query term frequency: the number of times a term appears in the query $q$. Used in `saturated` query mode with the formula $\frac{(k_3 + 1) \cdot qtf}{k_3 + qtf}$ to weight repeated query terms with diminishing returns. Not used in `unique` mode (default) where each term contributes once regardless of repetition.
+
 ## Benchmark Results
 
 ### Our BM25 Variants (Biology Domain)
