@@ -1,27 +1,75 @@
-max_iterations: 100
+# OpenEvolve configuration for BM25 ranking evolution on BRIGHT
+#
+# Evolution targets in src/ranking_evolved/bm25.py:
+# - EvolvedIDF.compute() - IDF formula
+# - EvolvedTF.compute() - TF saturation formula
+# - BM25.score_kernel() - Main scoring function
+#
+# Run with:
+#   export OPENAI_API_KEY="your-key"
+#   uv run openevolve-run src/ranking_evolved/bm25.py evaluator_bright.py --config openevolve_config.yaml
+#
+# Configure evaluation via env vars:
+#   BRIGHT_DOMAIN=biology (or all)
+#   BRIGHT_SAMPLE_QUERIES=20 (for faster iteration)
+#   BRIGHT_TOKENIZER=simple (or lucene)
+
+max_iterations: 200
 log_level: "INFO"
 random_seed: 42
 diff_based_evolution: true
-max_code_length: 12000
+max_code_length: 15000
 
 llm:
   models:
-    - name: "gpt-5.1"
+    - name: "gpt-4o"
       weight: 1.0
   api_base: "https://api.openai.com/v1"
   api_key: null  # falls back to OPENAI_API_KEY env var
   temperature: 0.7
   top_p: 0.95
   max_tokens: 8192
-  timeout: 120
+  timeout: 180
   retries: 3
   retry_delay: 5
 
 prompt:
   system_message: |
-    You are evolving a BM25 ranking function for BRIGHT. Focus on improving the psychology split without regressing strong domains, and avoid making weak math splits worse.
-    Optimize ranking metrics (ndcg@10, map, mrr, precision@10, recall@10). Keep the BM25 interface compatible and avoid adding extra dependencies.
-  evaluator_system_message: "You review candidate ranking code for quality and correctness."
+    You are evolving a BM25 ranking function for information retrieval on the BRIGHT benchmark.
+
+    ## Current Best Performance
+    - NDCG@10: 0.1587 (macro average across 12 domains)
+    - Best on: biology (0.29), earth_science (0.42)
+    - Weakest on: aops (0.03), theoremqa (0.05)
+
+    ## Evolution Targets
+    Focus on modifying these functions in bm25.py:
+    1. `EvolvedIDF.compute()` - IDF formula, currently: clip(log((N+0.5)/(df+0.5)), 0, 8)
+    2. `EvolvedTF.compute()` - TF saturation, currently: log(1 + tf_raw * tf_sat)
+    3. `BM25.score_kernel()` - Main scoring function combining IDF and TF
+
+    ## Guidelines
+    - Keep changes minimal and targeted
+    - Preserve the BM25 interface (Corpus, rank method signatures)
+    - Don't add new dependencies
+    - Mathematical changes should be numerically stable (avoid division by zero)
+    - The scoring function should return float scores that rank documents meaningfully
+
+    ## What Works Well
+    - Log-damped TF saturation outperforms classic BM25
+    - Clipping IDF prevents extreme values from dominating
+    - k1=0.9, b=0.4 are well-tuned parameters
+
+    ## Areas to Explore
+    - Different IDF smoothing approaches
+    - Alternative TF saturation curves
+    - Combining multiple signals in the score
+    - Domain-adaptive weighting
+
+  evaluator_system_message: |
+    You review candidate BM25 ranking code for correctness and quality.
+    Check for: numerical stability, interface compatibility, and meaningful ranking behavior.
+
   num_top_programs: 3
   num_diverse_programs: 2
   use_template_stochasticity: true
@@ -41,13 +89,13 @@ database:
   log_prompts: true
 
 evaluator:
-  timeout: 180
-  max_retries: 1
+  timeout: 300  # 5 minutes per evaluation
+  max_retries: 2
   cascade_evaluation: false
-  parallel_evaluations: 2
+  parallel_evaluations: 1  # Sequential to avoid memory issues with large corpora
 
 evolution_trace:
   enabled: true
   format: "jsonl"
-  include_code: false
+  include_code: true
   include_prompts: false
