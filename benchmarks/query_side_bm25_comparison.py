@@ -222,18 +222,28 @@ def main():
 
     stats = analyze_query_repetition(queries)
     print(f"\nTotal queries: {stats.total_queries}")
-    print(f"Queries with repeated terms: {stats.queries_with_repeats} ({100*stats.queries_with_repeats/stats.total_queries:.1f}%)")
+    print(
+        f"Queries with repeated terms: {stats.queries_with_repeats} ({100 * stats.queries_with_repeats / stats.total_queries:.1f}%)"
+    )
     print(f"Average query length: {stats.avg_query_length:.1f} tokens")
     print(f"Average unique terms: {stats.avg_unique_terms:.1f}")
     print(f"Max term frequency in any query: {stats.max_term_frequency}")
-    print(f"\nQuery length distribution:")
-    print(f"  > 16 tokens: {stats.queries_over_16_tokens} ({100*stats.queries_over_16_tokens/stats.total_queries:.1f}%)")
-    print(f"  > 64 tokens: {stats.queries_over_64_tokens} ({100*stats.queries_over_64_tokens/stats.total_queries:.1f}%)")
-    print(f"  > 256 tokens: {stats.queries_over_256_tokens} ({100*stats.queries_over_256_tokens/stats.total_queries:.1f}%)")
+    print("\nQuery length distribution:")
+    print(
+        f"  > 16 tokens: {stats.queries_over_16_tokens} ({100 * stats.queries_over_16_tokens / stats.total_queries:.1f}%)"
+    )
+    print(
+        f"  > 64 tokens: {stats.queries_over_64_tokens} ({100 * stats.queries_over_64_tokens / stats.total_queries:.1f}%)"
+    )
+    print(
+        f"  > 256 tokens: {stats.queries_over_256_tokens} ({100 * stats.queries_over_256_tokens / stats.total_queries:.1f}%)"
+    )
 
     # Paper's recommended range for query-side BM25: 16-256 tokens
     in_paper_range = stats.queries_over_16_tokens - stats.queries_over_256_tokens
-    print(f"\nIn paper's recommended range (16-256 tokens): {in_paper_range} ({100*in_paper_range/stats.total_queries:.1f}%)")
+    print(
+        f"\nIn paper's recommended range (16-256 tokens): {in_paper_range} ({100 * in_paper_range / stats.total_queries:.1f}%)"
+    )
 
     # Test different configurations
     print("\n" + "=" * 70)

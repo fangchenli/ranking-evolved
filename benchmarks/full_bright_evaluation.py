@@ -22,7 +22,7 @@ from dataclasses import dataclass
 import numpy as np
 from datasets import load_dataset
 
-from ranking_evolved.bm25 import BM25Config, BM25Unified, Corpus, tokenize
+from ranking_evolved.bm25 import BM25Config, BM25Unified, Corpus, LuceneTokenizer, tokenize
 from ranking_evolved.metrics import (
     mean_average_precision,
     mean_reciprocal_rank,
@@ -47,6 +47,7 @@ def get_lucene_tokenizer() -> Callable[[str], list[str]]:
             "  export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home\n"
             "  export JVM_PATH=$JAVA_HOME/lib/server/libjvm.dylib"
         )
+
 
 BRIGHT_SPLITS = [
     "biology",
@@ -157,7 +158,12 @@ def main():
     parser.add_argument(
         "--lucene",
         action="store_true",
-        help="Use Lucene tokenizer (requires Java 21 + Pyserini)",
+        help="Use Lucene tokenizer (pure Python implementation)",
+    )
+    parser.add_argument(
+        "--pyserini",
+        action="store_true",
+        help="Use Pyserini's Lucene tokenizer (requires Java 21 + Pyserini)",
     )
     parser.add_argument(
         "--query-mode",
@@ -179,9 +185,13 @@ def main():
     print("=" * 70)
 
     # Select tokenizer
-    if args.lucene:
-        print("\nUsing Lucene tokenizer (via Pyserini)")
+    if args.pyserini:
+        print("\nUsing Pyserini's Lucene tokenizer (requires Java 21)")
         tokenizer_fn = get_lucene_tokenizer()
+        tokenizer_name = "Pyserini"
+    elif args.lucene:
+        print("\nUsing pure Python Lucene tokenizer")
+        tokenizer_fn = LuceneTokenizer()
         tokenizer_name = "Lucene"
     else:
         print("\nUsing simple whitespace tokenizer")

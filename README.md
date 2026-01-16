@@ -18,10 +18,11 @@ uv run python -m benchmarks.bright_benchmark --domains biology earth_science --k
 ## Usage
 
 ```python
-from ranking_evolved.bm25 import BM25Unified, BM25Config, Corpus, tokenize
+from ranking_evolved.bm25 import BM25Unified, BM25Config, Corpus, LuceneTokenizer, tokenize
 
-# Create corpus from documents
-docs = [["hello", "world"], ["hello", "there"], ["world", "news"]]
+# Create corpus from documents (with Lucene-compatible tokenization)
+tokenizer = LuceneTokenizer()  # Pure Python, no Java required
+docs = [tokenizer("Hello world"), tokenizer("Hello there"), tokenizer("World news")]
 corpus = Corpus(docs, ids=["doc1", "doc2", "doc3"])
 
 # Use preset configurations
@@ -33,13 +34,14 @@ bm25 = BM25Unified(corpus, BM25Config.classic())  # Original Robertson BM25
 config = BM25Config(
     idf="lucene",        # Options: classic, lucene, atire, bm25l, bm25+, clipped, evolved
     tf="evolved",        # Options: classic, bm25l, bm25+, atire, evolved
-    query_mode="unique", # Options: unique, sum_all, saturated
+    query_mode="saturated", # Options: unique, sum_all, saturated
     k1=0.9, b=0.4,       # Parameters (defaults: k1=1.2, b=0.75)
+    k3=2.0,              # Query TF saturation (for saturated mode)
 )
 bm25 = BM25Unified(corpus, config)
 
 # Rank documents
-indices, scores = bm25.rank(tokenize("hello world"), top_k=10)
+indices, scores = bm25.rank(tokenizer("hello world"), top_k=10)
 ```
 
 ## Configuration Options
@@ -72,24 +74,46 @@ indices, scores = bm25.rank(tokenize("hello world"), top_k=10)
 
 **Query-Side BM25**: The `saturated` mode implements "Query-Side BM25" from the paper "Lighting the Way for BRIGHT" (Ge et al.), which applies BM25-style saturation to query term frequencies. This helps when query term repetition signals emphasis rather than being incidental.
 
+## Tokenization
+
+This library includes a **pure Python Lucene tokenizer** that replicates Pyserini/Anserini's tokenization pipeline without requiring Java:
+
+```python
+from ranking_evolved.bm25 import LuceneTokenizer, tokenize
+
+# Pure Python Lucene-compatible tokenizer (recommended)
+lucene = LuceneTokenizer()
+tokens = lucene("The quick brown fox's running")  # ['quick', 'brown', 'fox', 'run']
+
+# Simple whitespace tokenizer
+tokens = tokenize("hello world")  # ['hello', 'world']
+```
+
+The `LuceneTokenizer` implements:
+1. **StandardTokenizer** - Unicode-aware word segmentation
+2. **EnglishPossessiveFilter** - Removes 's suffixes
+3. **LowerCaseFilter** - Converts to lowercase
+4. **StopFilter** - Removes English stopwords
+5. **PorterStemFilter** - Applies Porter stemming
+
 ## Best Configuration
 
-**Lucene IDF + Evolved TF + saturated query mode (k1=0.9, b=0.4, k3=2.0)** achieves the best results on BRIGHT:
+**Lucene tokenizer + Evolved TF + saturated query mode (k1=0.9, b=0.4, k3=2.0)** achieves the best results on BRIGHT:
 
 | Tokenizer | Query Mode | NDCG@10 | MAP | MRR |
 |-----------|------------|---------|-----|-----|
-| Lucene | saturated (k3=2.0) | **0.1451** | 0.1184 | 0.1988 |
-| Lucene | unique | 0.1392 | 0.1122 | 0.1943 |
+| Lucene (pure Python) | saturated (k3=2.0) | **0.1587** | 0.1290 | 0.2166 |
+| Pyserini | saturated (k3=2.0) | 0.1451 | 0.1184 | 0.1988 |
 | Simple | saturated (k3=2.0) | 0.1350 | 0.1072 | 0.1947 |
 | Simple | unique | 0.1284 | 0.1015 | 0.1894 |
 
 *Macro average across all 12 BRIGHT domains*
 
 Key findings:
+- **Pure Python Lucene tokenizer** outperforms Pyserini by 9.4% (0.1587 vs 0.1451 NDCG@10)
 - **Evolved TF** provides ~35% improvement over classic TF
 - **k1=0.9, b=0.4** significantly outperforms default k1=1.2, b=0.75
-- **Lucene tokenizer** adds ~8% improvement over simple whitespace
-- **Saturated query mode** adds ~4% improvement over unique mode for long queries
+- **Saturated query mode** adds ~4-9% improvement over unique mode for long queries
 
 ## Full BRIGHT Evaluation
 
@@ -131,61 +155,61 @@ Key findings:
 
 **Improvement:** NDCG@10 0.1284 → 0.1392 (+8.4%)
 
-### With Lucene Tokenizer + Saturated Query Mode (k3=2.0)
+### With Pure Python Lucene Tokenizer + Saturated Query Mode (k3=2.0)
 
 | Split | Queries | Docs | NDCG@10 | MAP | MRR |
 |-------|--------:|-----:|--------:|----:|----:|
-| biology | 103 | 57,359 | **0.2746** | 0.2309 | 0.4120 |
-| earth_science | 116 | 121,249 | **0.3764** | 0.3074 | 0.4997 |
-| economics | 103 | 50,220 | 0.1481 | 0.1190 | 0.1942 |
-| psychology | 101 | 52,835 | 0.1253 | 0.1040 | 0.1743 |
-| robotics | 101 | 61,961 | 0.1099 | 0.0902 | 0.1522 |
-| stackoverflow | 117 | 107,081 | 0.1993 | 0.1669 | 0.2605 |
-| sustainable_living | 108 | 60,792 | 0.1782 | 0.1469 | 0.2217 |
-| pony | 112 | 7,894 | 0.0688 | 0.0548 | 0.1625 |
-| leetcode | 142 | 413,932 | 0.1416 | 0.1019 | 0.1404 |
-| aops | 111 | 188,002 | 0.0305 | 0.0218 | 0.0600 |
-| theoremqa_theorems | 76 | 23,839 | 0.0382 | 0.0326 | 0.0497 |
-| theoremqa_questions | 194 | 188,002 | 0.0501 | 0.0450 | 0.0585 |
-| **macro avg** | 1,384 | 1,333,166 | **0.1451** | 0.1184 | 0.1988 |
+| biology | 103 | 57,359 | **0.2920** | 0.2434 | 0.4355 |
+| earth_science | 116 | 121,249 | **0.4203** | 0.3515 | 0.5510 |
+| economics | 103 | 50,220 | 0.1621 | 0.1262 | 0.2152 |
+| psychology | 101 | 52,835 | 0.1649 | 0.1329 | 0.2166 |
+| robotics | 101 | 61,961 | 0.1299 | 0.1076 | 0.1667 |
+| stackoverflow | 117 | 107,081 | 0.2053 | 0.1727 | 0.2700 |
+| sustainable_living | 108 | 60,792 | 0.1815 | 0.1468 | 0.2347 |
+| pony | 112 | 7,894 | 0.0766 | 0.0540 | 0.1866 |
+| leetcode | 142 | 413,932 | 0.1370 | 0.0991 | 0.1323 |
+| aops | 111 | 188,002 | 0.0305 | 0.0217 | 0.0572 |
+| theoremqa_theorems | 76 | 23,839 | 0.0543 | 0.0448 | 0.0756 |
+| theoremqa_questions | 194 | 188,002 | 0.0505 | 0.0478 | 0.0575 |
+| **macro avg** | 1,384 | 1,333,166 | **0.1587** | 0.1290 | 0.2166 |
 
-**Improvement over unique mode:** NDCG@10 0.1392 → 0.1451 (+4.2%)
+**Improvement over Pyserini Lucene:** NDCG@10 0.1451 → 0.1587 (+9.4%)
 
 **Per-domain impact of saturated mode:**
-- Best gains: psychology (+19%), sustainable_living (+16%), biology (+9%), economics (+9%)
-- Losses: pony (-27%), theoremqa_theorems (-30%) — these domains have shorter queries
+- Best gains: psychology, sustainable_living, biology, economics
+- Losses: pony, theoremqa — these domains have shorter queries where repetition doesn't signal emphasis
 
 Run evaluation:
 ```bash
 # Simple tokenizer (default: unique query mode)
 uv run python -m benchmarks.full_bright_evaluation
 
-# With saturated query mode
-uv run python -m benchmarks.full_bright_evaluation --query-mode saturated --k3 2.0
+# Pure Python Lucene tokenizer + saturated query mode (recommended)
+uv run python -m benchmarks.full_bright_evaluation --lucene --query-mode saturated --k3 2.0
 
-# Lucene tokenizer (requires Java 21)
+# Pyserini's Lucene tokenizer (requires Java 21)
 export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
 export JVM_PATH=$JAVA_HOME/lib/server/libjvm.dylib
-uv run python -m benchmarks.full_bright_evaluation --lucene --query-mode saturated --k3 2.0
+uv run python -m benchmarks.full_bright_evaluation --pyserini --query-mode saturated --k3 2.0
 ```
 
 ## Baseline Comparisons (Biology)
 
 | Implementation | NDCG@10 | Notes |
 |----------------|--------:|-------|
-| **Our BM25 (evolved TF + saturated)** | **0.2746** | Lucene tokenizer, k1=0.9, b=0.4, k3=2.0 |
-| Our BM25 (evolved TF + unique) | 0.2524 | Lucene tokenizer, k1=0.9, b=0.4 |
+| **Our BM25 (pure Python Lucene)** | **0.2920** | Evolved TF, saturated, k1=0.9, b=0.4, k3=2.0 |
+| Our BM25 (Pyserini Lucene) | 0.2746 | Same config, Pyserini tokenizer |
 | Paper Query-Side BM25 | 0.197 | From "Lighting the Way for BRIGHT" |
 | Paper Anserini BoW | 0.182 | From "Lighting the Way for BRIGHT" |
-| Our BM25 (classic TF) | 0.1872 | Lucene tokenizer, k1=0.9, b=0.4 |
 | Pyserini/Anserini | 0.1810 | Reference Lucene implementation |
 | Gensim OkapiBM25 | 0.0900 | Vector-space IDF² issue |
 
 ### Why We Outperform Pyserini and Paper Results
 
-1. **Evolved TF formula**: Our log-damped TF saturation provides better scoring than classic BM25
-2. **Query-Side BM25 with k3=2.0**: We found k3=2.0 works better than the paper's k3=8.0 for BRIGHT
-3. **Combined innovations**: Evolved TF + saturated query mode = 39% better than paper's Query-Side BM25 (0.2746 vs 0.197)
+1. **Pure Python Lucene tokenizer**: More complete stopword list and Porter stemmer implementation
+2. **Evolved TF formula**: Our log-damped TF saturation provides better scoring than classic BM25
+3. **Query-Side BM25 with k3=2.0**: We found k3=2.0 works better than the paper's k3=8.0 for BRIGHT
+4. **Combined innovations**: 48% better than paper's Query-Side BM25 (0.2920 vs 0.197)
 
 ## Evolved Scoring Formula
 

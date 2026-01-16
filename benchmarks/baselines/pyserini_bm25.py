@@ -511,7 +511,6 @@ def evaluate_pyserini_on_bright_raw(
 
 
 if __name__ == "__main__":
-
     if check_java_available():
         print("Evaluating Pyserini BM25 on BRIGHT (biology domain)...")
         print("\n=== Raw Text Evaluation (recommended) ===")
