@@ -15,150 +15,353 @@ uv run python evaluator_bright.py src/ranking_evolved/bm25.py --k 10 --domain bi
 uv run python -m benchmarks.bright_benchmark --domains biology earth_science --k 10
 ```
 
-## Usage
+## How BM25 Works
 
-```python
-from ranking_evolved.bm25 import BM25Unified, BM25Config, Corpus, LuceneTokenizer, tokenize
+BM25 ranks documents by computing a relevance score for each document given a query. The scoring pipeline has four main stages:
 
-# Create corpus from documents (with Lucene-compatible tokenization)
-tokenizer = LuceneTokenizer()  # Pure Python, no Java required
-docs = [tokenizer("Hello world"), tokenizer("Hello there"), tokenizer("World news")]
-corpus = Corpus(docs, ids=["doc1", "doc2", "doc3"])
-
-# Use preset configurations
-bm25 = BM25Unified(corpus, BM25Config.evolved())  # Best performer
-bm25 = BM25Unified(corpus, BM25Config.lucene())   # Lucene-style
-bm25 = BM25Unified(corpus, BM25Config.classic())  # Original Robertson BM25
-
-# Or customize
-config = BM25Config(
-    idf="lucene",        # Options: classic, lucene, atire, bm25l, bm25+, clipped, evolved
-    tf="evolved",        # Options: classic, bm25l, bm25+, atire, evolved
-    query_mode="saturated", # Options: unique, sum_all, saturated
-    k1=0.9, b=0.4,       # Parameters (defaults: k1=1.2, b=0.75)
-    k3=2.0,              # Query TF saturation (for saturated mode)
-)
-bm25 = BM25Unified(corpus, config)
-
-# Rank documents
-indices, scores = bm25.rank(tokenizer("hello world"), top_k=10)
+```
+Query → [1. Tokenization] → [2. Query Term Handling] → [3. Scoring] → Ranked Results
+                ↓                                            ↑
+           Documents → [1. Tokenization] → [Corpus Index] ───┘
 ```
 
-## Configuration Options
+### The BM25 Formula
 
-### IDF Strategies
+The full BM25 score for a document $d$ given query $q$ is:
 
-| Strategy | Formula | Notes |
-|----------|---------|-------|
-| `classic` | $\log\frac{N - df + 0.5}{df + 0.5}$ | Can go negative for common terms |
-| `lucene` | $\log\left(1 + \frac{N - df + 0.5}{df + 0.5}\right)$ | Always positive |
-| `atire` | $\log\frac{N}{df}$ | Simpler formula |
-| `evolved` | $\text{clip}\left(\log\frac{N + 0.5}{df + 0.5}, 0, 8\right)$ | Best performer |
+$$\text{Score}(d, q) = \sum_{t \in q} \underbrace{\text{IDF}(t)}_{\text{term importance}} \times \underbrace{\text{TF}(t, d)}_{\text{doc relevance}} \times \underbrace{\text{QTF}(t, q)}_{\text{query weight}}$$
 
-### TF Strategies
+Where:
+- **IDF** (Inverse Document Frequency) — How rare/important is this term across all documents?
+- **TF** (Term Frequency) — How relevant is this document for this term?
+- **QTF** (Query Term Frequency) — How much should repeated query terms be weighted?
 
-| Strategy | Formula | Notes |
-|----------|---------|-------|
-| `classic` | $\frac{tf \cdot (k_1 + 1)}{tf + k_1 \cdot \text{norm}}$ | Standard BM25 |
-| `bm25l` | $\frac{(k_1 + 1)(c + \delta)}{k_1 + c + \delta}$ | Better for long docs |
-| `bm25+` | Classic $+ \delta$ | Minimum boost for any match |
-| `evolved` | $\log(1 + tf_{raw} \cdot tf_{sat})$ | Log-damped, best performer |
+---
+
+## Stage 1: Tokenization
+
+Tokenization converts raw text into a list of normalized terms. This is the first and most impactful preprocessing step.
+
+### Available Tokenizers
+
+| Tokenizer | Description | Example |
+|-----------|-------------|---------|
+| `LuceneTokenizer` | Full Lucene pipeline with stemming (recommended) | `"The fox's running"` → `['fox', 'run']` |
+| `tokenize` | Simple whitespace + lowercase | `"The fox's running"` → `['the', 'fox', 's', 'running']` |
+
+### LuceneTokenizer Pipeline
+
+The `LuceneTokenizer` replicates Pyserini/Anserini's tokenization in pure Python (no Java required):
+
+```python
+from ranking_evolved.bm25 import LuceneTokenizer
+
+tokenizer = LuceneTokenizer()
+tokens = tokenizer("The quick brown fox's running quickly!")
+# Returns: ['quick', 'brown', 'fox', 'run', 'quickli']
+```
+
+**Pipeline steps:**
+
+| Step | Filter | Input | Output | Purpose |
+|------|--------|-------|--------|---------|
+| 1 | StandardTokenizer | `"The fox's running"` | `['The', "fox's", 'running']` | Split on whitespace/punctuation |
+| 2 | EnglishPossessiveFilter | `["fox's"]` | `['fox']` | Remove `'s` suffixes |
+| 3 | LowerCaseFilter | `['The', 'Fox']` | `['the', 'fox']` | Normalize case |
+| 4 | StopFilter | `['the', 'fox']` | `['fox']` | Remove common words |
+| 5 | PorterStemFilter | `['running']` | `['run']` | Reduce to word stems |
+
+**Stopwords removed** (75 words): `a`, `an`, `and`, `are`, `as`, `at`, `be`, `been`, `but`, `by`, `can`, `do`, `for`, `from`, `had`, `has`, `have`, `he`, `her`, `him`, `his`, `how`, `i`, `if`, `in`, `into`, `is`, `it`, `its`, `me`, `my`, `no`, `not`, `of`, `on`, `or`, `our`, `out`, `s`, `she`, `so`, `some`, `such`, `t`, `than`, `that`, `the`, `their`, `them`, `then`, `there`, `these`, `they`, `this`, `to`, `too`, `us`, `very`, `was`, `we`, `were`, `what`, `when`, `where`, `which`, `who`, `will`, `with`, `would`, `you`, `your`
+
+**Porter Stemming examples:**
+
+| Word | Stem | Rule |
+|------|------|------|
+| `running` | `run` | Remove `-ing`, add nothing |
+| `quickly` | `quickli` | Transform `-ly` suffix |
+| `connections` | `connect` | Remove `-ions` |
+| `computational` | `comput` | Remove `-ational` |
+
+### Tokenizer Configuration
+
+```python
+# Default: stemming + stopwords
+tokenizer = LuceneTokenizer()
+
+# Without stemming (preserves original word forms)
+tokenizer = LuceneTokenizer(stem=False)
+tokenizer("running jumps")  # ['running', 'jumps']
+
+# Custom stopwords
+tokenizer = LuceneTokenizer(stopwords=frozenset(["custom", "words"]))
+
+# No stopword removal
+tokenizer = LuceneTokenizer(stopwords=frozenset())
+```
+
+### Impact of Tokenization
+
+| Tokenizer | NDCG@10 | Improvement |
+|-----------|---------|-------------|
+| Simple | 0.1284 | baseline |
+| Lucene (pure Python) | 0.1587 | **+23.6%** |
+
+*The Lucene tokenizer's stemming allows matching between `"running"` and `"run"`, and stopword removal focuses scoring on content words.*
+
+---
+
+## Stage 2: Query Term Handling
+
+When a query has repeated terms, how should they be counted? This is controlled by the **query term mode**.
 
 ### Query Term Modes
 
-| Mode | Behavior | Use case |
-|------|----------|----------|
-| `unique` | Each unique term contributes once | Default, best for short queries |
-| `sum_all` | Sum scores for all occurrences | Pyserini/Anserini compatible (BoW) |
-| `saturated` | Apply $\frac{(k_3 + 1) \cdot qtf}{k_3 + qtf}$ | Best for long queries with repetition |
+| Mode | Formula | Behavior |
+|------|---------|----------|
+| `unique` | $\text{QTF} = 1$ | Each unique term contributes once (bag-of-words) |
+| `sum_all` | $\text{QTF} = qtf$ | Sum scores for all occurrences (Pyserini-style) |
+| `saturated` | $\text{QTF} = \frac{(k_3 + 1) \cdot qtf}{k_3 + qtf}$ | Diminishing returns for repeated terms |
 
-**Query-Side BM25**: The `saturated` mode implements "Query-Side BM25" from the paper "Lighting the Way for BRIGHT" (Ge et al.), which applies BM25-style saturation to query term frequencies. This helps when query term repetition signals emphasis rather than being incidental.
+### Example: Query `"light light heat"`
 
-## Tokenization
+Consider a query where "light" appears twice:
 
-This library includes a **pure Python Lucene tokenizer** that replicates Pyserini/Anserini's tokenization pipeline without requiring Java:
+| Mode | How "light" is weighted | Use case |
+|------|-------------------------|----------|
+| `unique` | Counted once | Short queries, incidental repetition |
+| `sum_all` | Counted twice (2×) | Pyserini compatibility |
+| `saturated` (k3=2) | Counted 1.5× | Long queries where repetition signals emphasis |
+
+### Saturated Mode (Query-Side BM25)
+
+The `saturated` mode implements "Query-Side BM25" from ["Lighting the Way for BRIGHT"](https://arxiv.org/abs/2411.00934) (Ge et al.). It applies BM25-style saturation to query term frequencies:
+
+$$\text{QTF}(t, q) = \frac{(k_3 + 1) \cdot qtf}{k_3 + qtf}$$
+
+**k3 parameter behavior:**
+- `k3 → 0`: First occurrence matters most, repetition ignored
+- `k3 → ∞`: Linear weighting (same as `sum_all`)
+- `k3 = 2.0`: Our optimal value for BRIGHT (paper used k3=8.0)
 
 ```python
-from ranking_evolved.bm25 import LuceneTokenizer, tokenize
-
-# Pure Python Lucene-compatible tokenizer (recommended)
-lucene = LuceneTokenizer()
-tokens = lucene("The quick brown fox's running")  # ['quick', 'brown', 'fox', 'run']
-
-# Simple whitespace tokenizer
-tokens = tokenize("hello world")  # ['hello', 'world']
+config = BM25Config(
+    query_mode="saturated",
+    k3=2.0,  # Lower = faster saturation
+)
 ```
 
-The `LuceneTokenizer` implements:
-1. **StandardTokenizer** - Unicode-aware word segmentation
-2. **EnglishPossessiveFilter** - Removes 's suffixes
-3. **LowerCaseFilter** - Converts to lowercase
-4. **StopFilter** - Removes English stopwords
-5. **PorterStemFilter** - Applies Porter stemming
+### Impact by Domain
+
+| Domain | Avg Query Length | Saturated vs Unique |
+|--------|------------------|---------------------|
+| biology | 89 words | **+6.3%** |
+| psychology | 127 words | **+19%** |
+| sustainable_living | 95 words | **+16%** |
+| pony | 12 words | -27% |
+| theoremqa | 8 words | -30% |
+
+*Saturated mode helps long queries where term repetition signals emphasis, but hurts short queries where repetition is incidental.*
+
+---
+
+## Stage 3: Scoring Components
+
+### IDF (Inverse Document Frequency)
+
+IDF measures how rare/important a term is across the corpus. Rare terms (appearing in few documents) get higher IDF scores.
+
+| Strategy | Formula | Range | Notes |
+|----------|---------|-------|-------|
+| `classic` | $\log\frac{N - df + 0.5}{df + 0.5}$ | $(-\infty, +\infty)$ | Original Robertson BM25; negative for terms in >50% of docs |
+| `lucene` | $\log\left(1 + \frac{N - df + 0.5}{df + 0.5}\right)$ | $[0, +\infty)$ | Always non-negative |
+| `atire` | $\log\frac{N}{df}$ | $[0, +\infty)$ | Simpler formula |
+| `bm25l` | $\log\frac{N + 1}{df + 0.5}$ | $[0, +\infty)$ | For long document correction |
+| `bm25+` | $\log\frac{N + 1}{df}$ | $[0, +\infty)$ | Lower-bound guarantee |
+| `evolved` | $\text{clip}\left(\log\frac{N + 0.5}{df + 0.5}, 0, 8\right)$ | $[0, 8]$ | **Best performer** — clips extreme values |
+
+**Example IDF values** (N=100,000 documents):
+
+| df (docs containing term) | classic | lucene | evolved |
+|---------------------------|---------|--------|---------|
+| 1 (very rare) | 11.5 | 11.5 | **8.0** (clipped) |
+| 100 | 6.9 | 6.9 | 6.9 |
+| 10,000 | 2.2 | 2.3 | 2.3 |
+| 50,000 | -0.0 | 0.7 | 0.7 |
+| 99,000 (very common) | -4.6 | 0.0 | 0.0 |
+
+### TF (Term Frequency Saturation)
+
+TF measures how relevant a document is for a term, with saturation to prevent long documents from dominating.
+
+**Document length normalization:**
+$$\text{norm} = 1 - b + b \cdot \frac{|d|}{\text{avgdl}}$$
+
+Where:
+- $|d|$ = document length (number of terms)
+- $\text{avgdl}$ = average document length in corpus
+- $b$ = length normalization strength (0 = no normalization, 1 = full normalization)
+
+| Strategy | Formula | Notes |
+|----------|---------|-------|
+| `classic` | $\frac{tf \cdot (k_1 + 1)}{tf + k_1 \cdot \text{norm}}$ | Standard BM25 saturation |
+| `bm25l` | $\frac{(k_1 + 1)(c + \delta)}{k_1 + c + \delta}$ where $c = \frac{tf}{\text{norm}}$ | Better for long documents |
+| `bm25+` | Classic $+ \delta$ | Minimum boost for any match |
+| `atire` | Same as classic (different derivation) | Equivalent formula |
+| `evolved` | $\log(1 + tf_{raw} \cdot tf_{sat})$ | **Best performer** — log-damped |
+
+**The evolved TF formula** (discovered via OpenEvolve):
+$$tf_{raw} = \frac{tf \cdot (k_1 + 1)}{tf + k_1 \cdot \text{norm}}$$
+$$tf_{sat} = \frac{tf}{tf + k_1 + 0.5}$$
+$$\text{TF}_{evolved} = \log(1 + tf_{raw} \cdot tf_{sat})$$
+
+### Key Parameters
+
+| Parameter | Default | Range | Effect |
+|-----------|---------|-------|--------|
+| `k1` | 1.2 | 0.5-2.0 | TF saturation speed (lower = faster saturation) |
+| `b` | 0.75 | 0-1 | Length normalization strength |
+| `k3` | 8.0 | 0-∞ | Query TF saturation (only for `saturated` mode) |
+
+**Our optimal values for BRIGHT:** `k1=0.9`, `b=0.4`, `k3=2.0`
+
+---
+
+## Stage 4: Putting It Together
+
+### Full Scoring Example
+
+Query: `"protein folding mechanisms"`
+Document: `"This paper discusses protein folding and misfolding mechanisms in cells."`
+
+**Step 1: Tokenization**
+```
+Query tokens:  ['protein', 'fold', 'mechan']
+Doc tokens:    ['paper', 'discuss', 'protein', 'fold', 'misfold', 'mechan', 'cell']
+```
+
+**Step 2: Compute IDF** (assuming N=100,000, evolved strategy)
+```
+IDF('protein') = 4.2   (appears in ~1,500 docs)
+IDF('fold')    = 6.1   (appears in ~220 docs)
+IDF('mechan')  = 5.8   (appears in ~300 docs)
+```
+
+**Step 3: Compute TF** (assuming doc length=7, avgdl=500, k1=0.9, b=0.4)
+```
+norm = 1 - 0.4 + 0.4 * (7/500) = 0.606
+
+TF('protein') = log(1 + tf_raw * tf_sat) = 0.52  (tf=1)
+TF('fold')    = log(1 + tf_raw * tf_sat) = 0.52  (tf=1)
+TF('mechan')  = log(1 + tf_raw * tf_sat) = 0.52  (tf=1)
+```
+
+**Step 4: Final Score** (unique query mode, QTF=1)
+```
+Score = IDF('protein') × TF × QTF + IDF('fold') × TF × QTF + IDF('mechan') × TF × QTF
+      = 4.2 × 0.52 × 1 + 6.1 × 0.52 × 1 + 5.8 × 0.52 × 1
+      = 2.18 + 3.17 + 3.02
+      = 8.37
+```
+
+---
+
+## Usage
+
+### Basic Usage
+
+```python
+from ranking_evolved.bm25 import BM25Unified, BM25Config, Corpus, LuceneTokenizer
+
+# 1. Create tokenizer
+tokenizer = LuceneTokenizer()
+
+# 2. Tokenize documents
+docs = [
+    tokenizer("Protein folding is essential for cell function"),
+    tokenizer("Machine learning models for protein structure prediction"),
+    tokenizer("Cell biology and molecular mechanisms"),
+]
+corpus = Corpus(docs, ids=["doc1", "doc2", "doc3"])
+
+# 3. Configure BM25
+config = BM25Config(
+    idf="evolved",         # Best IDF strategy
+    tf="evolved",          # Best TF strategy
+    query_mode="saturated", # Best for long queries
+    k1=0.9, b=0.4, k3=2.0, # Optimal parameters
+)
+bm25 = BM25Unified(corpus, config)
+
+# 4. Rank documents
+indices, scores = bm25.rank(tokenizer("protein folding"), top_k=10)
+print(f"Best match: doc {corpus.ids[indices[0]]} (score: {scores[0]:.2f})")
+```
+
+### Preset Configurations
+
+```python
+# Best overall performance
+bm25 = BM25Unified(corpus, BM25Config.evolved())
+
+# Lucene/Pyserini compatible
+bm25 = BM25Unified(corpus, BM25Config.lucene())
+
+# Classic Robertson BM25
+bm25 = BM25Unified(corpus, BM25Config.classic())
+
+# BM25L (better for long documents)
+bm25 = BM25Unified(corpus, BM25Config.bm25l())
+
+# BM25+ (lower-bound guarantee)
+bm25 = BM25Unified(corpus, BM25Config.bm25_plus())
+```
+
+### Loading from HuggingFace
+
+```python
+from datasets import load_dataset
+from ranking_evolved.bm25 import Corpus, LuceneTokenizer
+
+# Load BRIGHT biology domain
+dataset = load_dataset("xlangai/BRIGHT", "documents", split="biology")
+
+# Create corpus with Lucene tokenization
+tokenizer = LuceneTokenizer()
+docs = [tokenizer(doc["content"]) for doc in dataset]
+ids = [doc["id"] for doc in dataset]
+corpus = Corpus(docs, ids=ids)
+```
+
+---
 
 ## Best Configuration
 
-**Lucene tokenizer + Evolved TF + saturated query mode (k1=0.9, b=0.4, k3=2.0)** achieves the best results on BRIGHT:
+**Lucene tokenizer + Evolved TF + saturated query mode (k1=0.9, b=0.4, k3=2.0)**
 
 | Tokenizer | Query Mode | NDCG@10 | MAP | MRR |
 |-----------|------------|---------|-----|-----|
-| Lucene (pure Python) | saturated (k3=2.0) | **0.1587** | 0.1290 | 0.2166 |
-| Pyserini | saturated (k3=2.0) | 0.1451 | 0.1184 | 0.1988 |
-| Simple | saturated (k3=2.0) | 0.1350 | 0.1072 | 0.1947 |
+| Lucene (pure Python) | saturated | **0.1587** | 0.1290 | 0.2166 |
+| Pyserini (Java) | saturated | 0.1451 | 0.1184 | 0.1988 |
+| Simple | saturated | 0.1350 | 0.1072 | 0.1947 |
 | Simple | unique | 0.1284 | 0.1015 | 0.1894 |
 
-*Macro average across all 12 BRIGHT domains*
+*Macro average across all 12 BRIGHT domains (1,384 queries, 1.3M documents)*
 
-Key findings:
-- **Pure Python Lucene tokenizer** outperforms Pyserini by 9.4% (0.1587 vs 0.1451 NDCG@10)
-- **Evolved TF** provides ~35% improvement over classic TF
-- **k1=0.9, b=0.4** significantly outperforms default k1=1.2, b=0.75
-- **Saturated query mode** adds ~4-9% improvement over unique mode for long queries
+### Key Findings
 
-## Full BRIGHT Evaluation
+1. **Pure Python Lucene tokenizer** outperforms Pyserini by 9.4%
+2. **Evolved TF** provides ~35% improvement over classic TF
+3. **k1=0.9, b=0.4** significantly outperforms defaults (k1=1.2, b=0.75)
+4. **Saturated query mode** adds 4-9% for long queries
 
-### With Simple Tokenizer
+---
 
-| Split | Queries | Docs | NDCG@10 | MAP | MRR |
-|-------|--------:|-----:|--------:|----:|----:|
-| biology | 103 | 57,359 | 0.2318 | 0.1830 | 0.3404 |
-| earth_science | 116 | 121,249 | 0.2941 | 0.2457 | 0.4132 |
-| economics | 103 | 50,220 | 0.1061 | 0.0823 | 0.1539 |
-| psychology | 101 | 52,835 | 0.0772 | 0.0680 | 0.1097 |
-| robotics | 101 | 61,961 | 0.0867 | 0.0739 | 0.1301 |
-| stackoverflow | 117 | 107,081 | 0.1701 | 0.1474 | 0.2256 |
-| sustainable_living | 108 | 60,792 | 0.1201 | 0.0977 | 0.1531 |
-| pony | 112 | 7,894 | 0.2047 | 0.1226 | 0.4385 |
-| leetcode | 142 | 413,932 | 0.1319 | 0.0982 | 0.1296 |
-| aops | 111 | 188,002 | 0.0216 | 0.0162 | 0.0496 |
-| theoremqa_theorems | 76 | 23,839 | 0.0387 | 0.0329 | 0.0663 |
-| theoremqa_questions | 194 | 188,002 | 0.0583 | 0.0495 | 0.0624 |
-| **macro avg** | 1,384 | 1,333,166 | **0.1284** | 0.1015 | 0.1894 |
+## Full BRIGHT Evaluation Results
 
-### With Lucene Tokenizer
+### Best Configuration: Lucene + Evolved + Saturated (k3=2.0)
 
-| Split | Queries | Docs | NDCG@10 | MAP | MRR |
-|-------|--------:|-----:|--------:|----:|----:|
-| biology | 103 | 57,359 | 0.2524 | 0.2036 | 0.3772 |
-| earth_science | 116 | 121,249 | 0.3493 | 0.2884 | 0.4678 |
-| economics | 103 | 50,220 | 0.1362 | 0.1083 | 0.1830 |
-| psychology | 101 | 52,835 | 0.1053 | 0.0846 | 0.1441 |
-| robotics | 101 | 61,961 | 0.1073 | 0.0882 | 0.1565 |
-| stackoverflow | 117 | 107,081 | 0.1995 | 0.1623 | 0.2634 |
-| sustainable_living | 108 | 60,792 | 0.1540 | 0.1243 | 0.2016 |
-| pony | 112 | 7,894 | 0.0937 | 0.0715 | 0.2261 |
-| leetcode | 142 | 413,932 | 0.1299 | 0.0939 | 0.1267 |
-| aops | 111 | 188,002 | 0.0287 | 0.0180 | 0.0515 |
-| theoremqa_theorems | 76 | 23,839 | 0.0543 | 0.0476 | 0.0648 |
-| theoremqa_questions | 194 | 188,002 | 0.0604 | 0.0553 | 0.0694 |
-| **macro avg** | 1,384 | 1,333,166 | **0.1392** | 0.1122 | 0.1943 |
-
-**Improvement:** NDCG@10 0.1284 → 0.1392 (+8.4%)
-
-### With Pure Python Lucene Tokenizer + Saturated Query Mode (k3=2.0)
-
-| Split | Queries | Docs | NDCG@10 | MAP | MRR |
-|-------|--------:|-----:|--------:|----:|----:|
+| Domain | Queries | Docs | NDCG@10 | MAP | MRR |
+|--------|--------:|-----:|--------:|----:|----:|
 | biology | 103 | 57,359 | **0.2920** | 0.2434 | 0.4355 |
 | earth_science | 116 | 121,249 | **0.4203** | 0.3515 | 0.5510 |
 | economics | 103 | 50,220 | 0.1621 | 0.1262 | 0.2152 |
@@ -171,87 +374,62 @@ Key findings:
 | aops | 111 | 188,002 | 0.0305 | 0.0217 | 0.0572 |
 | theoremqa_theorems | 76 | 23,839 | 0.0543 | 0.0448 | 0.0756 |
 | theoremqa_questions | 194 | 188,002 | 0.0505 | 0.0478 | 0.0575 |
-| **macro avg** | 1,384 | 1,333,166 | **0.1587** | 0.1290 | 0.2166 |
+| **MACRO AVG** | **1,384** | **1,333,166** | **0.1587** | **0.1290** | **0.2166** |
 
-**Improvement over Pyserini Lucene:** NDCG@10 0.1451 → 0.1587 (+9.4%)
-
-**Per-domain impact of saturated mode:**
-- Best gains: psychology, sustainable_living, biology, economics
-- Losses: pony, theoremqa — these domains have shorter queries where repetition doesn't signal emphasis
-
-Run evaluation:
-```bash
-# Simple tokenizer (default: unique query mode)
-uv run python -m benchmarks.full_bright_evaluation
-
-# Pure Python Lucene tokenizer + saturated query mode (recommended)
-uv run python -m benchmarks.full_bright_evaluation --lucene --query-mode saturated --k3 2.0
-
-# Pyserini's Lucene tokenizer (requires Java 21)
-export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
-export JVM_PATH=$JAVA_HOME/lib/server/libjvm.dylib
-uv run python -m benchmarks.full_bright_evaluation --pyserini --query-mode saturated --k3 2.0
-```
-
-## Baseline Comparisons (Biology)
+### Comparison with Baselines (Biology Domain)
 
 | Implementation | NDCG@10 | Notes |
 |----------------|--------:|-------|
-| **Our BM25 (pure Python Lucene)** | **0.2920** | Evolved TF, saturated, k1=0.9, b=0.4, k3=2.0 |
-| Our BM25 (Pyserini Lucene) | 0.2746 | Same config, Pyserini tokenizer |
+| **Our BM25** | **0.2920** | Lucene + evolved + saturated |
 | Paper Query-Side BM25 | 0.197 | From "Lighting the Way for BRIGHT" |
 | Paper Anserini BoW | 0.182 | From "Lighting the Way for BRIGHT" |
-| Pyserini/Anserini | 0.1810 | Reference Lucene implementation |
-| Gensim OkapiBM25 | 0.0900 | Vector-space IDF² issue |
+| Pyserini/Anserini | 0.181 | Reference implementation |
+| Gensim OkapiBM25 | 0.090 | Vector-space IDF² issue |
 
-### Why We Outperform Pyserini and Paper Results
+**Our implementation achieves 48% improvement over the paper's Query-Side BM25.**
 
-1. **Pure Python Lucene tokenizer**: More complete stopword list and Porter stemmer implementation
-2. **Evolved TF formula**: Our log-damped TF saturation provides better scoring than classic BM25
-3. **Query-Side BM25 with k3=2.0**: We found k3=2.0 works better than the paper's k3=8.0 for BRIGHT
-4. **Combined innovations**: 48% better than paper's Query-Side BM25 (0.2920 vs 0.197)
+### Run Evaluation
 
-## Evolved Scoring Formula
+```bash
+# Best configuration (recommended)
+uv run python -m benchmarks.full_bright_evaluation --lucene --query-mode saturated --k3 2.0
 
-The best-performing formula (from OpenEvolve iteration 113):
+# Simple tokenizer baseline
+uv run python -m benchmarks.full_bright_evaluation
 
-**IDF:**
-$$\text{IDF}(t) = \text{clip}\left(\log\frac{N + 0.5}{df(t) + 0.5}, 0, 8\right)$$
+# Pyserini tokenizer (requires Java 21)
+export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
+uv run python -m benchmarks.full_bright_evaluation --pyserini --query-mode saturated --k3 2.0
+```
 
-**TF Saturation:**
-$$\text{norm} = 1 - b + b \cdot \frac{|d|}{\text{avgdl}}$$
-$$tf_{raw} = \frac{tf \cdot (k_1 + 1)}{tf + k_1 \cdot \text{norm}}$$
-$$tf_{sat} = \frac{tf}{tf + k_1 + 0.5}$$
-
-**Score:**
-$$\text{Score}(d, q) = \sum_{t \in q} \text{IDF}(t) \cdot \log(1 + tf_{raw} \cdot tf_{sat})$$
-
-**Variable definitions:**
-- $tf$ — Raw term frequency (count of term $t$ in document $d$)
-- $\text{norm}$ — Length normalization factor
-- $tf_{raw}$ — Standard BM25 TF saturation (Robertson formula)
-- $tf_{sat}$ — Additional saturation factor (evolved innovation)
-- $qtf$ — Query term frequency (used in `saturated` query mode)
+---
 
 ## Project Structure
 
 ```
 ranking-evolved/
 ├── src/ranking_evolved/
-│   ├── bm25.py          # Modular BM25 implementation
-│   └── metrics.py       # Evaluation metrics (NDCG, MAP, MRR, etc.)
+│   ├── bm25.py          # BM25 implementation (tokenizers, IDF/TF strategies, scorers)
+│   └── metrics.py       # Evaluation metrics (NDCG, MAP, MRR, precision, recall)
 ├── benchmarks/
-│   ├── bright_benchmark.py    # Comprehensive benchmark runner
-│   ├── cross_validation.py    # Cross-validation across implementations
-│   └── baselines/             # External library wrappers
+│   ├── full_bright_evaluation.py  # Full 12-domain evaluation
+│   ├── bright_benchmark.py        # Comprehensive benchmark runner
+│   └── baselines/                 # External library wrappers (Pyserini, Gensim)
+├── tests/
+│   ├── test_bm25.py               # BM25 unit tests
+│   └── test_lucene_tokenizer.py   # Tokenizer tests (88 test cases)
 ├── references/
-│   ├── bm25_formulas.md       # BM25 variant formulas
-│   └── evolved_variants.md    # Archive of evolved formulas
-├── evaluator_bright.py        # OpenEvolve evaluator
-└── openevolve_config.yaml     # OpenEvolve configuration
+│   ├── bm25_formulas.md           # BM25 variant formulas
+│   └── evolved_variants.md        # Archive of evolved formulas
+├── evaluator_bright.py            # OpenEvolve evaluator
+└── openevolve_config.yaml         # OpenEvolve configuration
 ```
 
+---
+
 ## Running OpenEvolve
+
+The evolved TF formula was discovered using [OpenEvolve](https://github.com/algorithmicsuperintelligence/openevolve):
 
 ```bash
 export OPENAI_API_KEY="your-key"
@@ -261,17 +439,22 @@ uv run python openevolve/openevolve-run.py \
     --config openevolve_config.yaml
 ```
 
+---
+
 ## Development
 
 ```bash
 uv sync --group dev
-uv run pytest
-uv run ruff format
-uv run mypy src/
+uv run pytest              # Run all tests
+uv run ruff format         # Format code
+uv run mypy src/           # Type checking
 ```
+
+---
 
 ## References
 
-- [BM25 Formulas Reference](references/bm25_formulas.md)
-- [OpenEvolve](https://github.com/algorithmicsuperintelligence/openevolve)
-- [BRIGHT Dataset](https://huggingface.co/datasets/xlangai/BRIGHT)
+- [BM25 Formulas Reference](references/bm25_formulas.md) — Detailed formula derivations
+- [OpenEvolve](https://github.com/algorithmicsuperintelligence/openevolve) — Evolutionary algorithm framework
+- [BRIGHT Dataset](https://huggingface.co/datasets/xlangai/BRIGHT) — Benchmark for retrieval
+- ["Lighting the Way for BRIGHT"](https://arxiv.org/abs/2411.00934) — Query-Side BM25 paper
