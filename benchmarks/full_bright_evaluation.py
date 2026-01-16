@@ -159,6 +159,19 @@ def main():
         action="store_true",
         help="Use Lucene tokenizer (requires Java 21 + Pyserini)",
     )
+    parser.add_argument(
+        "--query-mode",
+        type=str,
+        default="unique",
+        choices=["unique", "sum_all", "saturated"],
+        help="Query term mode (default: unique)",
+    )
+    parser.add_argument(
+        "--k3",
+        type=float,
+        default=8.0,
+        help="k3 parameter for saturated query mode (default: 8.0)",
+    )
     args = parser.parse_args()
 
     print("=" * 70)
@@ -179,9 +192,10 @@ def main():
     config = BM25Config(
         idf="lucene",
         tf="evolved",
-        query_mode="unique",
+        query_mode=args.query_mode,
         k1=0.9,
         b=0.4,
+        k3=args.k3,
     )
     k = 10
 
