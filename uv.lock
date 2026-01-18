@@ -565,6 +565,15 @@ wheels = [
 ]
 
 [[package]]
+name = "dacite"
+version = "1.9.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/55/a0/7ca79796e799a3e782045d29bf052b5cde7439a2bbb17f15ff44f7aacc63/dacite-1.9.2.tar.gz", hash = "sha256:6ccc3b299727c7aa17582f0021f6ae14d5de47c7227932c47fec4cdfefd26f09", size = 22420, upload-time = "2025-02-05T09:27:29.757Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/94/35/386550fd60316d1e37eccdda609b074113298f23cef5bddb2049823fe666/dacite-1.9.2-py3-none-any.whl", hash = "sha256:053f7c3f5128ca2e9aceb66892b1a3c8936d02c686e707bee96e19deef4bc4a0", size = 16600, upload-time = "2025-02-05T09:27:24.345Z" },
+]
+
+[[package]]
 name = "datasets"
 version = "4.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2031,18 +2040,19 @@ wheels = [
 
 [[package]]
 name = "openevolve"
-version = "0.2.22"
+version = "0.2.25"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "dacite" },
     { name = "flask" },
     { name = "numpy" },
     { name = "openai" },
     { name = "pyyaml" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e8/4d/0741e651f73d44dd3e63e73040f0928d6fc5a8a465eccbe382381e0ae740/openevolve-0.2.22.tar.gz", hash = "sha256:682660a5c808c097663ee922c0684b4204d6be29dcc61ded10430ca782e17623", size = 167229, upload-time = "2025-11-26T00:28:59.024Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cf/2f/fd87fd1e27d077f7af1587655aed918acba25eeddb1c8d338d26da1bd43f/openevolve-0.2.25.tar.gz", hash = "sha256:8bc62e581beddfd047c83d9484b270dd3cfb71d5c3140a7c38b82475983aed5c", size = 168411, upload-time = "2025-12-23T18:01:38.386Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a0/9d/37e531dfabd8ec9ef6d46239d8962815ae476fafbd62eae31cf94b9922ed/openevolve-0.2.22-py3-none-any.whl", hash = "sha256:cbac8c9a71d5b71d2d4b46bb438a0a177da78a1b593f6fcd8a5f28989577297e", size = 109099, upload-time = "2025-11-26T00:28:57.633Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/f5/422429de867484e7415f95816986d209d321c8a9c907c0f19a70246da2fa/openevolve-0.2.25-py3-none-any.whl", hash = "sha256:b5565dd272ba626ba9dd6bcc14c1327c0092b37e31f617a52424d3e0932c4ddd", size = 109116, upload-time = "2025-12-23T18:01:36.968Z" },
 ]
 
 [[package]]
@@ -2913,7 +2923,7 @@ dev = [
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "numpy", specifier = ">=2.3.1" },
-    { name = "openevolve", specifier = "==0.2.22" },
+    { name = "openevolve", specifier = "==0.2.25" },
     { name = "scipy", specifier = ">=1.14.0" },
 ]
 

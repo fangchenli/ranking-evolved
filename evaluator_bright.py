@@ -121,18 +121,27 @@ def evaluate(program_path: str, k: int = DEFAULT_K) -> dict[str, float]:
         k: Cutoff for @k metrics.
 
     Returns:
-        Dictionary with evaluation metrics.
+        Dictionary with evaluation metrics. On error, returns combined_score=0.0 and error=1.0.
     """
-    return evaluate_with_options(
-        program_path,
-        k=k,
-        sample_queries=DEFAULT_SAMPLE_QUERIES,
-        seed=DEFAULT_SEED,
-        domain=DEFAULT_DOMAIN,
-        tokenizer=DEFAULT_TOKENIZER,
-        query_mode=DEFAULT_QUERY_MODE,
-        k3=DEFAULT_K3,
-    )
+    try:
+        return evaluate_with_options(
+            program_path,
+            k=k,
+            sample_queries=DEFAULT_SAMPLE_QUERIES,
+            seed=DEFAULT_SEED,
+            domain=DEFAULT_DOMAIN,
+            tokenizer=DEFAULT_TOKENIZER,
+            query_mode=DEFAULT_QUERY_MODE,
+            k3=DEFAULT_K3,
+        )
+    except Exception as e:
+        # Return error dict so OpenEvolve knows this candidate failed
+        return {
+            "combined_score": 0.0,
+            "ndcg_at_k": 0.0,
+            "error": 1.0,
+            "error_message": str(e),
+        }
 
 
 def evaluate_with_options(
@@ -161,7 +170,9 @@ def evaluate_with_options(
     Returns:
         Dictionary with evaluation metrics.
     """
-    BM25Impl, CorpusCls, tokenize_fn, LuceneTokenizerCls, BM25ConfigCls, BM25UnifiedCls = _load_candidate(program_path)
+    BM25Impl, CorpusCls, tokenize_fn, LuceneTokenizerCls, BM25ConfigCls, BM25UnifiedCls = (
+        _load_candidate(program_path)
+    )
 
     # Select tokenizer
     if tokenizer == "lucene" and LuceneTokenizerCls is not None:

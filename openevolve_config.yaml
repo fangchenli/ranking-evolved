@@ -1,16 +1,16 @@
 # OpenEvolve configuration for BM25 ranking evolution on BRIGHT
 #
-# Evolution targets in src/ranking_evolved/bm25.py:
+# Evolution targets in src/ranking_evolved/bm25_evolved.py (~200 lines):
 # - EvolvedIDF.compute() - IDF formula
 # - EvolvedTF.compute() - TF saturation formula
 # - BM25.score_kernel() - Main scoring function
 #
 # Run with:
 #   export OPENAI_API_KEY="your-key"
-#   uv run openevolve-run src/ranking_evolved/bm25.py evaluator_bright.py --config openevolve_config.yaml
+#   uv run openevolve-run src/ranking_evolved/bm25_evolved.py evaluator_bright.py --config openevolve_config.yaml
 #
 # Configure evaluation via env vars:
-#   BRIGHT_DOMAIN=biology (or all)
+#   BRIGHT_DOMAIN=aops (or biology, theoremqa_theorems, all)
 #   BRIGHT_SAMPLE_QUERIES=20 (for faster iteration)
 #   BRIGHT_TOKENIZER=simple (or lucene)
 
@@ -18,7 +18,7 @@ max_iterations: 200
 log_level: "INFO"
 random_seed: 42
 diff_based_evolution: true
-max_code_length: 15000
+max_code_length: 12000  # bm25_evolved.py is ~270 lines with vectorized rank
 
 llm:
   models:
@@ -35,36 +35,29 @@ llm:
 
 prompt:
   system_message: |
-    You are evolving a BM25 ranking function for information retrieval on the BRIGHT benchmark.
+    You are evolving a BM25 ranking function for the BRIGHT benchmark.
 
-    ## Current Best Performance
-    - NDCG@10: 0.1587 (macro average across 12 domains)
-    - Best on: biology (0.29), earth_science (0.42)
-    - Weakest on: aops (0.03), theoremqa (0.05)
+    ## Evolution Targets (in bm25_evolved.py)
+    1. `EvolvedIDF.compute()` - IDF formula
+    2. `EvolvedTF.compute()` - TF saturation
+    3. `BM25.score_kernel()` - Scoring function
 
-    ## Evolution Targets
-    Focus on modifying these functions in bm25.py:
-    1. `EvolvedIDF.compute()` - IDF formula, currently: clip(log((N+0.5)/(df+0.5)), 0, 8)
-    2. `EvolvedTF.compute()` - TF saturation, currently: log(1 + tf_raw * tf_sat)
-    3. `BM25.score_kernel()` - Main scoring function combining IDF and TF
+    ## Current Formulas
+    - IDF: clip(log((N+0.5)/(df+0.5)), 0, 8)
+    - TF: log(1 + tf_raw * tf_sat) where tf_sat = tf/(tf+k1+0.5)
+    - Parameters: k1=0.9, b=0.4
 
     ## Guidelines
     - Keep changes minimal and targeted
-    - Preserve the BM25 interface (Corpus, rank method signatures)
-    - Don't add new dependencies
-    - Mathematical changes should be numerically stable (avoid division by zero)
-    - The scoring function should return float scores that rank documents meaningfully
-
-    ## What Works Well
-    - Log-damped TF saturation outperforms classic BM25
-    - Clipping IDF prevents extreme values from dominating
-    - k1=0.9, b=0.4 are well-tuned parameters
+    - Preserve BM25 interface (Corpus, rank signatures)
+    - No new dependencies - only numpy is available
+    - Ensure numerical stability (avoid division by zero)
+    - Infrastructure (tokenizers, Corpus) is imported - don't modify
 
     ## Areas to Explore
-    - Different IDF smoothing approaches
+    - Different IDF smoothing/scaling
     - Alternative TF saturation curves
-    - Combining multiple signals in the score
-    - Domain-adaptive weighting
+    - Non-linear score combinations
 
   evaluator_system_message: |
     You review candidate BM25 ranking code for correctness and quality.
@@ -89,7 +82,7 @@ database:
   log_prompts: true
 
 evaluator:
-  timeout: 300  # 5 minutes per evaluation
+  timeout: 900  # 15 minutes per evaluation (aops has 188k docs)
   max_retries: 2
   cascade_evaluation: false
   parallel_evaluations: 1  # Sequential to avoid memory issues with large corpora

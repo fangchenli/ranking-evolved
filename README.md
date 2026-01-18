@@ -356,6 +356,59 @@ corpus = Corpus(docs, ids=ids)
 
 ---
 
+## Hyperparameter Search Results
+
+We ran a grid search over BM25 parameters (k1, b, tokenizer) across all 12 BRIGHT domains.
+
+### Search Grid
+
+```python
+k1_values = [0.5, 0.7, 0.9, 1.2, 1.5, 2.0]
+b_values = [0.2, 0.3, 0.4, 0.5, 0.6, 0.75]
+tokenizers = ["simple", "lucene"]
+```
+
+Total: 72 combinations per domain (36 × 2 tokenizers)
+
+### Best Parameters Per Domain
+
+| Domain | Tokenizer | k1 | b | NDCG@10 |
+|--------|-----------|---:|---:|--------:|
+| earth_science | lucene | 1.5 | 0.5 | **0.3874** |
+| biology | lucene | 0.7 | 0.4 | 0.2809 |
+| pony | simple | 0.5 | 0.5 | 0.2158 |
+| stackoverflow | lucene | 1.2 | 0.5 | 0.2109 |
+| sustainable_living | lucene | 0.9 | 0.5 | 0.1660 |
+| economics | lucene | 0.7 | 0.5 | 0.1558 |
+| psychology | lucene | 1.5 | 0.3 | 0.1450 |
+| leetcode | lucene | 0.5 | 0.75 | 0.1377 |
+| robotics | lucene | 0.9 | 0.4 | 0.1348 |
+| theoremqa_theorems | lucene | 0.7 | 0.75 | 0.0732 |
+| theoremqa_questions | lucene | 0.5 | 0.75 | 0.0613 |
+| aops | lucene | 0.5 | 0.75 | 0.0339 |
+
+### Key Findings
+
+1. **Lucene tokenizer wins 11/12 domains** — Only `pony` (short queries, code-related) prefers simple tokenization
+2. **Optimal k1 range: 0.5–1.5** — Lower k1 for math/code domains (faster saturation), higher k1 for natural language
+3. **Optimal b range: 0.3–0.75** — Math/code domains prefer b=0.75 (stronger length normalization)
+4. **Domain-specific tuning matters** — Best k1 varies from 0.5 (leetcode, aops) to 1.5 (earth_science, psychology)
+
+### Run Hyperparameter Search
+
+```bash
+# Single domain
+uv run python hyperparam_search.py --domain biology
+
+# Specific tokenizer only
+uv run python hyperparam_search.py --domain biology --tokenizer lucene
+
+# All domains (saves to JSON)
+uv run python hyperparam_search.py --domain all --output hyperparam_results.json
+```
+
+---
+
 ## Full BRIGHT Evaluation Results
 
 ### Best Configuration: Lucene + Evolved + Saturated (k3=2.0)
