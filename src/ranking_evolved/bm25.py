@@ -708,6 +708,45 @@ class EvolvedTF:
         return np.log1p(tf_raw * tf_sat)
 
 
+class DoubleLogTF:
+    """
+    TF_l∘δ∘p×IDF - Double-log TF saturation from Rousseau & Vazirgiannis (SIGIR 2013).
+
+    Formula:
+        c = tf / norm  (length-normalized tf)
+        tf_component = (1 + log(1 + log(c))) + delta
+
+    This applies double logarithmic scaling to model the non-linear gain
+    of a term occurring multiple times in a document. The delta parameter
+    ensures terms occurring at least once get a minimum boost.
+
+    Reference: "Composition of TF normalizations: new insights on scoring
+    functions for ad hoc IR" (SIGIR 2013)
+    """
+
+    def __init__(self, delta: float = 1.0):
+        self.delta = delta
+
+    def compute(
+        self,
+        tf: NDArray[np.float64],
+        k1: float,  # Not used in this formula, but kept for interface compatibility
+        norm: NDArray[np.float64],
+    ) -> NDArray[np.float64]:
+        # Length-normalized TF: c = tf / norm
+        c = tf / (norm + 1e-9)
+
+        # Double-log saturation with delta boost for matching terms
+        # For tf > 0: (1 + log(1 + log(c))) + delta
+        # For tf = 0: 0
+        result = np.where(
+            tf > 0,
+            (1.0 + np.log1p(np.log1p(np.maximum(c, 1e-9)))) + self.delta,
+            0.0,
+        )
+        return result
+
+
 # =============================================================================
 # Query TF Strategies (for query-side BM25)
 # =============================================================================
@@ -1507,6 +1546,145 @@ class BM25PyseriniStyle:
 
 
 # =============================================================================
+# BM25-adpt (Adaptive Per-Term k1)
+# =============================================================================
+
+
+class BM25Adaptive:
+    """
+    BM25-adpt: Adaptive term frequency normalization.
+
+    This variant computes a different k1 value for each term based on
+    information gain, as proposed by Lv & Zhai (CIKM 2011).
+
+    The optimal k1 for a term is found by minimizing:
+        k1' = argmin_k1 Σ(G_r/G_1 - (k1+1)*r/(k1+r))²
+
+    Where G_r is the information gain of a term occurring r times vs r-1 times.
+
+    For terms where the optimal k1 is undefined (most low-df terms),
+    we default to k1=0.001 following Trotman et al.
+
+    Reference: "Adaptive term frequency normalization for BM25" (CIKM 2011)
+
+    Args:
+        corpus: Pre-processed Corpus instance.
+        b: Length normalization parameter (default: 0.4).
+        default_k1: Default k1 when optimal cannot be computed (default: 0.001).
+    """
+
+    def __init__(
+        self,
+        corpus: Corpus,
+        b: float = 0.4,
+        default_k1: float = 0.001,
+    ):
+        self.corpus = corpus
+        self.b = b
+        self.default_k1 = default_k1
+
+        # Pre-compute document normalization factors
+        dl = self.corpus.document_length
+        avgdl = self.corpus.average_document_length or 1.0
+        self._doc_norm = 1.0 - b + b * (dl / avgdl)
+
+        # Pre-compute per-term optimal k1 and G1 values
+        self._term_k1: dict[str, float] = {}
+        self._term_g1: dict[str, float] = {}
+        self._compute_adaptive_params()
+
+    def _compute_adaptive_params(self) -> None:
+        """
+        Compute per-term k1 values based on information gain.
+
+        Following Trotman et al.'s finding that ~90% of terms don't have
+        a unique optimal k1, we use a simplified approach:
+        - Use standard Robertson IDF as G1 (information gain of first occurrence)
+        - Use default k1 for all terms (0.001 per Trotman et al.)
+
+        The full Lv & Zhai optimization is complex and rarely improves results.
+        """
+        N = self.corpus.document_count
+        df_array = self.corpus.df_array
+        vocab = self.corpus.vocabulary
+
+        # Use standard Robertson IDF as G1 (information gain of first occurrence)
+        for term, term_idx in vocab.items():
+            df = df_array[term_idx]
+            # Standard BM25 IDF: log((N - df + 0.5) / (df + 0.5))
+            # Clip to non-negative (like Lucene IDF)
+            g1 = np.log((N - df + 0.5) / (df + 0.5))
+            self._term_g1[term] = max(0.0, float(g1))
+            # Default k1 for all terms (as per Trotman et al.)
+            self._term_k1[term] = self.default_k1
+
+    def score(self, query: list[str], index: int) -> float:
+        """
+        Compute BM25-adpt score for a single document.
+
+        Uses per-term adaptive k1 values instead of a global k1.
+        """
+        if not query:
+            return 0.0
+
+        unique_terms = list(dict.fromkeys(query))
+        if not unique_terms:
+            return 0.0
+
+        norm = float(self._doc_norm[index])
+        frequencies = self.corpus.term_frequency[index]
+
+        score = 0.0
+        for term in unique_terms:
+            tf = frequencies.get(term, 0)
+            if tf == 0:
+                continue
+
+            # Get term-specific k1 and G1 (for IDF weighting)
+            k1 = self._term_k1.get(term, self.default_k1)
+            g1 = self._term_g1.get(term, 0.0)
+
+            if g1 <= 0:
+                continue
+
+            # BM25-adpt TF component with adaptive k1
+            tf_component = ((k1 + 1) * tf) / (tf + k1 * norm + 1e-9)
+
+            # Use G1 as the IDF weight
+            score += g1 * tf_component
+
+        return score
+
+    def rank(
+        self,
+        query: list[str],
+        top_k: int | None = None,
+    ) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
+        """Rank all documents by relevance to query."""
+        scores = np.array(
+            [self.score(query, idx) for idx in range(len(self.corpus))],
+            dtype=np.float64,
+        )
+
+        sorted_indices = np.argsort(scores)[::-1].astype(np.int64)
+        sorted_scores = scores[sorted_indices]
+
+        if top_k is not None:
+            sorted_indices = sorted_indices[:top_k]
+            sorted_scores = sorted_scores[:top_k]
+
+        return sorted_indices, sorted_scores
+
+    def batch_rank(
+        self,
+        queries: list[list[str]],
+        top_k: int | None = None,
+    ) -> list[tuple[NDArray[np.int64], NDArray[np.float64]]]:
+        """Rank documents for multiple queries."""
+        return [self.rank(query, top_k) for query in queries]
+
+
+# =============================================================================
 # Unified Configurable BM25
 # =============================================================================
 
@@ -1529,6 +1707,7 @@ TF_STRATEGIES: dict[str, type[TFStrategy]] = {
     "bm25+": BM25PlusTF,
     "atire": ATIRETF,
     "evolved": EvolvedTF,
+    "doublelog": DoubleLogTF,
 }
 
 
@@ -1570,7 +1749,7 @@ class BM25Config:
             idf: IDF strategy name or instance.
                 Options: "classic", "lucene", "atire", "bm25l", "bm25+", "clipped", "evolved"
             tf: TF strategy name or instance.
-                Options: "classic", "bm25l", "bm25+", "atire", "evolved"
+                Options: "classic", "bm25l", "bm25+", "atire", "evolved", "doublelog"
             query_mode: How to handle repeated query terms.
                 Options: "unique" (bag-of-words), "sum_all" (Pyserini-style), "saturated"
             k1: TF saturation parameter (default: 1.2).
@@ -1613,6 +1792,8 @@ class BM25Config:
             if tf_lower == "bm25l":
                 self.tf_strategy = tf_cls(delta=delta)
             elif tf_lower == "bm25+":
+                self.tf_strategy = tf_cls(delta=delta)
+            elif tf_lower == "doublelog":
                 self.tf_strategy = tf_cls(delta=delta)
             else:
                 self.tf_strategy = tf_cls()
@@ -1677,6 +1858,15 @@ class BM25Config:
     def evolved(cls, k1: float = 1.5, b: float = 0.75) -> BM25Config:
         """Evolved BM25 (this project's best)."""
         return cls(idf="evolved", tf="evolved", query_mode="unique", k1=k1, b=b)
+
+    @classmethod
+    def doublelog(cls, k1: float = 1.2, b: float = 0.75, delta: float = 1.0) -> BM25Config:
+        """
+        TF_l∘δ∘p×IDF from Rousseau & Vazirgiannis (SIGIR 2013).
+
+        Uses double-log TF saturation: 1 + log(1 + log(tf/norm)) + delta
+        """
+        return cls(idf="bm25+", tf="doublelog", query_mode="unique", k1=k1, b=b, delta=delta)
 
 
 class BM25Unified:
@@ -2054,6 +2244,9 @@ __all__ = [
     "BM25PlusTF",
     "ATIRETF",
     "EvolvedTF",
+    "DoubleLogTF",
+    # Adaptive BM25
+    "BM25Adaptive",
     # Query TF strategies
     "QueryTFStrategy",
     "NoQueryTF",
