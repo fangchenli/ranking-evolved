@@ -1,9 +1,16 @@
 # OpenEvolve configuration for BM25 ranking evolution on BRIGHT
 #
-# Evolution targets in src/ranking_evolved/bm25_evolved.py (~200 lines):
-# - EvolvedIDF.compute() - IDF formula
-# - EvolvedTF.compute() - TF saturation formula
-# - BM25.score_kernel() - Main scoring function
+# Evolution targets in src/ranking_evolved/bm25_evolved.py (~740 lines):
+# 1. EvolvedParameters - k1, b, k3, IDF bounds
+# 2. EvolvedStopwords - stopword list
+# 3. EvolvedStemmer - stemming rules
+# 4. EvolvedTokenizer - tokenization pipeline
+# 5. EvolvedIDF - IDF formula
+# 6. EvolvedTF - TF saturation formula
+# 7. EvolvedLengthNorm - document length normalization
+# 8. EvolvedQueryWeighting - query term handling
+# 9. EvolvedScoreAggregation - score combination
+# 10. BM25.score_kernel() - main scoring function
 #
 # Run with:
 #   export OPENAI_API_KEY="your-key"
@@ -18,7 +25,7 @@ max_iterations: 200
 log_level: "INFO"
 random_seed: 42
 diff_based_evolution: true
-max_code_length: 12000  # bm25_evolved.py is ~270 lines with vectorized rank
+max_code_length: 30000  # bm25_evolved.py is ~740 lines (~22k chars) with all evolution targets
 
 llm:
   models:
@@ -38,26 +45,38 @@ prompt:
     You are evolving a BM25 ranking function for the BRIGHT benchmark.
 
     ## Evolution Targets (in bm25_evolved.py)
-    1. `EvolvedIDF.compute()` - IDF formula
-    2. `EvolvedTF.compute()` - TF saturation
-    3. `BM25.score_kernel()` - Scoring function
+    1. `EvolvedParameters` - k1, b, k3, max_idf, min_idf
+    2. `EvolvedStopwords` - extra_stopwords, keep_words sets
+    3. `EvolvedStemmer` - enabled, custom_stems, strip_suffixes
+    4. `EvolvedTokenizer` - min/max_token_length, filter_numbers, split_pattern
+    5. `EvolvedIDF.compute()` - IDF formula
+    6. `EvolvedTF.compute()` - TF saturation formula
+    7. `EvolvedLengthNorm.compute()` - length normalization formula
+    8. `EvolvedQueryWeighting` - mode (unique/sum_all/saturated), compute_weights()
+    9. `EvolvedScoreAggregation` - mode (sum/weighted_sum/max/mean), aggregate()
+    10. `BM25.score_kernel()` - main scoring function
 
-    ## Current Formulas
+    ## Current Best Formulas
     - IDF: clip(log((N+0.5)/(df+0.5)), 0, 8)
     - TF: log(1 + tf_raw * tf_sat) where tf_sat = tf/(tf+k1+0.5)
-    - Parameters: k1=0.9, b=0.4
+    - LengthNorm: 1 - b + b*(dl/avgdl)
+    - Parameters: k1=0.9, b=0.4, k3=2.0
 
     ## Guidelines
     - Keep changes minimal and targeted
     - Preserve BM25 interface (Corpus, rank signatures)
-    - No new dependencies - only numpy is available
+    - No new dependencies - only numpy and re are available
     - Ensure numerical stability (avoid division by zero)
-    - Infrastructure (tokenizers, Corpus) is imported - don't modify
+    - Infrastructure (Corpus, PorterStemmer) is imported - don't redefine
 
     ## Areas to Explore
-    - Different IDF smoothing/scaling
+    - Different IDF smoothing/scaling (log1p, sqrt, etc.)
     - Alternative TF saturation curves
     - Non-linear score combinations
+    - Query weighting modes
+    - Score aggregation strategies (max, mean vs sum)
+    - Stopword/stemming customization
+    - Parameter tuning (k1, b, k3)
 
   evaluator_system_message: |
     You review candidate BM25 ranking code for correctness and quality.

@@ -486,11 +486,79 @@ The evolved TF formula was discovered using [OpenEvolve](https://github.com/algo
 
 ```bash
 export OPENAI_API_KEY="your-key"
-uv run python openevolve/openevolve-run.py \
-    src/ranking_evolved/bm25.py \
-    evaluator_bright.py \
-    --config openevolve_config.yaml
+uv run openevolve-run src/ranking_evolved/bm25_evolved.py evaluator_bright.py --config openevolve_config.yaml
 ```
+
+---
+
+## OpenEvolve v2 Results (Expanded Evolution Targets)
+
+We expanded `bm25_evolved.py` to allow OpenEvolve to modify **10 different aspects** of the BM25 system:
+
+1. **EvolvedParameters** — k1, b, k3, IDF bounds
+2. **EvolvedStopwords** — stopword list customization
+3. **EvolvedStemmer** — stemming rules
+4. **EvolvedTokenizer** — tokenization pipeline
+5. **EvolvedIDF** — IDF formula
+6. **EvolvedTF** — TF saturation formula
+7. **EvolvedLengthNorm** — document length normalization
+8. **EvolvedQueryWeighting** — query term handling (unique/sum_all/saturated)
+9. **EvolvedScoreAggregation** — score combination (sum/weighted_sum/max/mean)
+10. **BM25.score_kernel()** — main scoring function
+
+### Best Evolved Configuration (195 iterations, 6 generations)
+
+| Component | Original | Evolved |
+|-----------|----------|---------|
+| **IDF** | `log((N+0.5)/(df+0.5))` | `log((N+0.5)/(df+0.5) + 1)` |
+| **TF** | `log1p(tf_raw * tf_sat)` | `log1p((tf*(k1+1))/(tf+k1*norm+0.5))` |
+| **Query weighting** | `unique` | `sum_all` |
+| **Score aggregation** | `sum` | `weighted_sum` |
+
+### Full Evaluation Results
+
+#### Simple Tokenizer
+
+| Domain | Queries | Docs | NDCG@10 | MAP | MRR |
+|--------|--------:|-----:|--------:|----:|----:|
+| earth_science | 116 | 121,249 | **0.2952** | 0.2483 | 0.4042 |
+| biology | 103 | 57,359 | **0.2467** | 0.2005 | 0.3814 |
+| stackoverflow | 117 | 107,081 | 0.1603 | 0.1373 | 0.2106 |
+| sustainable_living | 108 | 60,792 | 0.1440 | 0.1200 | 0.1890 |
+| leetcode | 142 | 413,932 | 0.1361 | 0.0981 | 0.1316 |
+| pony | 112 | 7,894 | 0.1230 | 0.0907 | 0.2618 |
+| economics | 103 | 50,220 | 0.1215 | 0.0806 | 0.1611 |
+| psychology | 101 | 52,835 | 0.1003 | 0.0856 | 0.1328 |
+| robotics | 101 | 61,961 | 0.0904 | 0.0740 | 0.1206 |
+| theoremqa_questions | 194 | 188,002 | 0.0420 | 0.0366 | 0.0506 |
+| aops | 111 | 188,002 | 0.0270 | 0.0183 | 0.0496 |
+| theoremqa_theorems | 76 | 23,839 | 0.0142 | 0.0136 | 0.0254 |
+| **MACRO AVG** | **1,384** | **1,333,166** | **0.1251** | 0.1003 | 0.1766 |
+
+#### Lucene Tokenizer
+
+| Domain | Queries | Docs | NDCG@10 | MAP | MRR |
+|--------|--------:|-----:|--------:|----:|----:|
+| earth_science | 116 | 121,249 | **0.4287** | 0.3658 | 0.5583 |
+| biology | 103 | 57,359 | **0.2699** | 0.2263 | 0.4000 |
+| stackoverflow | 117 | 107,081 | 0.1861 | 0.1623 | 0.2446 |
+| economics | 103 | 50,220 | 0.1790 | 0.1358 | 0.2266 |
+| psychology | 101 | 52,835 | 0.1714 | 0.1401 | 0.2234 |
+| sustainable_living | 108 | 60,792 | 0.1716 | 0.1413 | 0.2211 |
+| leetcode | 142 | 413,932 | 0.1280 | 0.0944 | 0.1264 |
+| robotics | 101 | 61,961 | 0.0992 | 0.0866 | 0.1380 |
+| pony | 112 | 7,894 | 0.0319 | 0.0316 | 0.1058 |
+| theoremqa_questions | 194 | 188,002 | 0.0360 | 0.0361 | 0.0419 |
+| aops | 111 | 188,002 | 0.0289 | 0.0199 | 0.0503 |
+| theoremqa_theorems | 76 | 23,839 | 0.0274 | 0.0246 | 0.0462 |
+| **MACRO AVG** | **1,384** | **1,333,166** | **0.1465** | 0.1221 | 0.1986 |
+
+### Key Findings
+
+1. **Lucene tokenizer + evolved formulas** achieves **0.1465 macro NDCG@10** across all 12 domains
+2. **`sum_all` query weighting + `weighted_sum` aggregation** improves ranking by giving repeated query terms more weight
+3. **Simplified TF formula** with `+0.5` smoothing in denominator provides better saturation behavior
+4. **`+1` inside IDF log** provides smoother scaling for rare terms
 
 ---
 
