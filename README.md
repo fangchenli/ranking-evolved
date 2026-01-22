@@ -487,6 +487,73 @@ ranking-evolved/
 
 ---
 
+## Running Evaluators
+
+### BRIGHT Evaluator
+
+Evaluate on the [BRIGHT benchmark](https://huggingface.co/datasets/xlangai/BRIGHT) (12 domains, 1.3M documents).
+
+```bash
+# Basic evaluation on biology domain
+uv run python evaluator_bright.py src/ranking_evolved/bm25.py --domain biology
+
+# Use Lucene tokenizer with saturated query mode (best config)
+uv run python evaluator_bright.py src/ranking_evolved/bm25.py \
+    --tokenizer lucene --query-mode saturated --k3 2.0
+
+# Evaluate across all domains
+uv run python evaluator_bright.py src/ranking_evolved/bm25.py --domain all
+
+# Fast iteration with query sampling
+uv run python evaluator_bright.py src/ranking_evolved/bm25.py \
+    --domain biology --sample-queries 20
+```
+
+**Options:**
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--domain` | `biology` | Domain to evaluate (`biology`, `earth_science`, `economics`, etc., or `all`) |
+| `--tokenizer` | `simple` | Tokenizer (`simple` or `lucene`) |
+| `--query-mode` | `unique` | Query term handling (`unique`, `sum_all`, `saturated`) |
+| `--k3` | `2.0` | k3 parameter for saturated mode |
+| `--k` | `10` | Cutoff for @k metrics |
+| `--sample-queries` | `0` | Sample N queries (0 = use all) |
+
+### BEIR Evaluator
+
+Evaluate on the [BEIR benchmark](https://github.com/beir-cellar/beir) (18 datasets for zero-shot IR evaluation).
+
+```bash
+# Evaluate on SciFact (small, fast)
+uv run python evaluator_beir.py src/ranking_evolved/bm25.py --dataset scifact
+
+# Use Lucene tokenizer (default)
+uv run python evaluator_beir.py src/ranking_evolved/bm25.py \
+    --dataset nfcorpus --tokenizer lucene
+
+# Evaluate across all BEIR datasets (takes several hours)
+uv run python evaluator_beir.py src/ranking_evolved/bm25.py --dataset all
+
+# Fast iteration with query sampling
+uv run python evaluator_beir.py src/ranking_evolved/bm25.py \
+    --dataset quora --sample-queries 50
+```
+
+**Options:**
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--dataset` | `scifact` | Dataset to evaluate (`scifact`, `nfcorpus`, `quora`, etc., or `all`) |
+| `--tokenizer` | `lucene` | Tokenizer (`simple` or `lucene`) |
+| `--k` | `10` | Cutoff for @k metrics |
+| `--sample-queries` | `0` | Sample N queries (0 = use all) |
+| `--data-dir` | `datasets/beir` | Directory to store downloaded datasets |
+
+**Available BEIR datasets:** `scifact`, `nfcorpus`, `arguana`, `scidocs`, `fiqa`, `webis-touche2020`, `trec-covid`, `quora`, `cqadupstack`, `robust04`, `trec-news`, `hotpotqa`, `nq`, `fever`, `climate-fever`, `dbpedia-entity`, `bioasq`
+
+**BEIR paper BM25 baselines (nDCG@10):** SciFact: 0.665, NQ: 0.329, HotpotQA: 0.603, FEVER: 0.753, Quora: 0.789
+
+---
+
 ## Running OpenEvolve
 
 The evolved TF formula was discovered using [OpenEvolve](https://github.com/algorithmicsuperintelligence/openevolve):
