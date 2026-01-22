@@ -210,8 +210,11 @@ Where:
 | `evolved` | $\log(1 + tf_{raw} \cdot tf_{sat})$ | **Best performer** — log-damped |
 
 **The evolved TF formula** (discovered via OpenEvolve):
+
 $$tf_{raw} = \frac{tf \cdot (k_1 + 1)}{tf + k_1 \cdot \text{norm}}$$
+
 $$tf_{sat} = \frac{tf}{tf + k_1 + 0.5}$$
+
 $$\text{TF}_{evolved} = \log(1 + tf_{raw} \cdot tf_{sat})$$
 
 ### Key Parameters
