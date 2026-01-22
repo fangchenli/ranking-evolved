@@ -1,6 +1,6 @@
 # ranking-evolved
 
-BM25 ranking experiments with evolution via [OpenEvolve](https://github.com/algorithmicsuperintelligence/openevolve). Evaluated on the [BRIGHT dataset](https://huggingface.co/datasets/xlangai/BRIGHT).
+BM25 ranking experiments with evolution via [OpenEvolve](https://github.com/algorithmicsuperintelligence/openevolve). Evaluated on the [BRIGHT](https://huggingface.co/datasets/xlangai/BRIGHT) and [BEIR](https://github.com/beir-cellar/beir) benchmarks.
 
 ## Quick Start
 
@@ -8,10 +8,13 @@ BM25 ranking experiments with evolution via [OpenEvolve](https://github.com/algo
 # Install dependencies (Python >= 3.11 required)
 uv sync
 
-# Run evaluation on a single domain
+# Run BRIGHT evaluation on a single domain
 uv run python evaluator_bright.py src/ranking_evolved/bm25.py --k 10 --domain biology
 
-# Run comprehensive benchmark
+# Run BEIR evaluation on a single dataset
+uv run python evaluator_beir.py src/ranking_evolved/bm25.py --dataset scifact --tokenizer lucene
+
+# Run comprehensive BRIGHT benchmark
 uv run python -m benchmarks.bright_benchmark --domains biology earth_science --k 10
 ```
 
@@ -477,7 +480,8 @@ ranking-evolved/
 ├── references/
 │   ├── bm25_formulas.md           # BM25 variant formulas
 │   └── evolved_variants.md        # Archive of evolved formulas
-├── evaluator_bright.py            # OpenEvolve evaluator
+├── evaluator_bright.py            # BRIGHT benchmark evaluator (OpenEvolve compatible)
+├── evaluator_beir.py              # BEIR benchmark evaluator
 └── openevolve_config.yaml         # OpenEvolve configuration
 ```
 
