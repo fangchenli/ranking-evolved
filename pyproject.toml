@@ -12,6 +12,7 @@ dependencies = [
     "numpy>=2.3.1",
     "scipy>=1.14.0",
     "openevolve==0.2.25",
+    "beir>=2.2.0",
 ]
 
 [build-system]

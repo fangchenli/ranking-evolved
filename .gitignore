@@ -209,3 +209,6 @@ __marimo__/
 # Project-specific
 openevolve/
 src/ranking_evolved/openevolve_output/
+
+# BEIR benchmark data
+datasets/
