@@ -1,20 +1,20 @@
 # OpenEvolve configuration for BM25 ranking evolution on BRIGHT
 #
-# Evolution targets in src/ranking_evolved/bm25_evolved.py (~740 lines):
-# 1. EvolvedParameters - k1, b, k3, IDF bounds
-# 2. EvolvedStopwords - stopword list
-# 3. EvolvedStemmer - stemming rules
-# 4. EvolvedTokenizer - tokenization pipeline
-# 5. EvolvedIDF - IDF formula
-# 6. EvolvedTF - TF saturation formula
-# 7. EvolvedLengthNorm - document length normalization
-# 8. EvolvedQueryWeighting - query term handling
-# 9. EvolvedScoreAggregation - score combination
+# Evolution targets in src/ranking_evolved/bm25_classic.py (~700 lines):
+# 1. ClassicParameters - k1, b, k3
+# 2. ClassicStopwords - stopword list
+# 3. ClassicStemmer - stemming rules
+# 4. ClassicTokenizer - tokenization pipeline
+# 5. ClassicIDF - IDF formula
+# 6. ClassicTF - TF saturation formula
+# 7. ClassicLengthNorm - document length normalization
+# 8. ClassicQueryWeighting - query term handling
+# 9. ClassicScoreAggregation - score combination
 # 10. BM25.score_kernel() - main scoring function
 #
 # Run with:
 #   export OPENAI_API_KEY="your-key"
-#   uv run openevolve-run src/ranking_evolved/bm25_evolved.py evaluator_bright.py --config openevolve_config.yaml
+#   uv run openevolve-run src/ranking_evolved/bm25_classic.py evaluator_bright.py --config openevolve_config.yaml
 #
 # Configure evaluation via env vars:
 #   BRIGHT_DOMAIN=aops (or biology, theoremqa_theorems, all)
@@ -25,7 +25,7 @@ max_iterations: 200
 log_level: "INFO"
 random_seed: 42
 diff_based_evolution: true
-max_code_length: 30000  # bm25_evolved.py is ~740 lines (~22k chars) with all evolution targets
+max_code_length: 30000  # bm25_classic.py is ~700 lines (~21k chars) with all evolution targets
 
 llm:
   models:
@@ -44,23 +44,25 @@ prompt:
   system_message: |
     You are evolving a BM25 ranking function for the BRIGHT benchmark.
 
-    ## Evolution Targets (in bm25_evolved.py)
-    1. `EvolvedParameters` - k1, b, k3, max_idf, min_idf
-    2. `EvolvedStopwords` - extra_stopwords, keep_words sets
-    3. `EvolvedStemmer` - enabled, custom_stems, strip_suffixes
-    4. `EvolvedTokenizer` - min/max_token_length, filter_numbers, split_pattern
-    5. `EvolvedIDF.compute()` - IDF formula
-    6. `EvolvedTF.compute()` - TF saturation formula
-    7. `EvolvedLengthNorm.compute()` - length normalization formula
-    8. `EvolvedQueryWeighting` - mode (unique/sum_all/saturated), compute_weights()
-    9. `EvolvedScoreAggregation` - mode (sum/weighted_sum/max/mean), aggregate()
+    ## Evolution Targets (in bm25_classic.py)
+    1. `ClassicParameters` - k1, b, k3
+    2. `ClassicStopwords` - extra_stopwords, keep_words sets
+    3. `ClassicStemmer` - enabled, custom_stems, strip_suffixes
+    4. `ClassicTokenizer` - min/max_token_length, filter_numbers, split_pattern
+    5. `ClassicIDF.compute()` - IDF formula
+    6. `ClassicTF.compute()` - TF saturation formula
+    7. `ClassicLengthNorm.compute()` - length normalization formula
+    8. `ClassicQueryWeighting` - mode (unique/sum_all/saturated), compute_weights()
+    9. `ClassicScoreAggregation` - mode (sum/weighted_sum/max/mean), aggregate()
     10. `BM25.score_kernel()` - main scoring function
 
-    ## Current Best Formulas
-    - IDF: clip(log((N+0.5)/(df+0.5)), 0, 8)
-    - TF: log(1 + tf_raw * tf_sat) where tf_sat = tf/(tf+k1+0.5)
+    ## Current Starting Point (Vanilla Robertson BM25)
+    - IDF: log((N - df + 0.5) / (df + 0.5))
+    - TF: (tf * (k1 + 1)) / (tf + k1 * norm)
     - LengthNorm: 1 - b + b*(dl/avgdl)
-    - Parameters: k1=0.9, b=0.4, k3=2.0
+    - Parameters: k1=1.5, b=0.75, k3=8.0
+    - Query mode: unique (bag-of-words)
+    - Aggregation: sum
 
     ## Guidelines
     - Keep changes minimal and targeted
@@ -70,10 +72,10 @@ prompt:
     - Infrastructure (Corpus, PorterStemmer) is imported - don't redefine
 
     ## Areas to Explore
-    - Different IDF smoothing/scaling (log1p, sqrt, etc.)
-    - Alternative TF saturation curves
+    - Different IDF smoothing/scaling (log1p, sqrt, clipping, etc.)
+    - Alternative TF saturation curves (log damping, double saturation)
     - Non-linear score combinations
-    - Query weighting modes
+    - Query weighting modes (sum_all, saturated)
     - Score aggregation strategies (max, mean vs sum)
     - Stopword/stemming customization
     - Parameter tuning (k1, b, k3)

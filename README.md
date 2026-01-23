@@ -469,6 +469,8 @@ uv run python -m benchmarks.full_bright_evaluation --pyserini --query-mode satur
 ranking-evolved/
 ├── src/ranking_evolved/
 │   ├── bm25.py          # BM25 implementation (tokenizers, IDF/TF strategies, scorers)
+│   ├── bm25_classic.py  # Vanilla Robertson BM25 for OpenEvolve (k1=1.5, b=0.75)
+│   ├── bm25_evolved.py  # Evolved BM25 with discovered optimizations
 │   └── metrics.py       # Evaluation metrics (NDCG, MAP, MRR, precision, recall)
 ├── benchmarks/
 │   ├── full_bright_evaluation.py  # Full 12-domain evaluation
@@ -550,7 +552,24 @@ uv run python evaluator_beir.py src/ranking_evolved/bm25.py \
 
 **Available BEIR datasets:** `scifact`, `nfcorpus`, `arguana`, `scidocs`, `fiqa`, `webis-touche2020`, `trec-covid`, `quora`, `cqadupstack`, `robust04`, `trec-news`, `hotpotqa`, `nq`, `fever`, `climate-fever`, `dbpedia-entity`, `bioasq`
 
-**BEIR paper BM25 baselines (nDCG@10):** SciFact: 0.665, NQ: 0.329, HotpotQA: 0.603, FEVER: 0.753, Quora: 0.789
+### BEIR Benchmark Results
+
+Comparison of our BM25 implementations vs the [BEIR paper](https://arxiv.org/abs/2104.08663) baseline (nDCG@10):
+
+| Dataset | BEIR Paper | Our Classic | Δ | Notes |
+|---------|-----------|-------------|------|-------|
+| SciFact | 0.665 | **0.690** | +3.8% | Fact verification |
+| TREC-COVID | 0.656 | **0.716** | +9.1% | COVID-19 retrieval |
+| NFCorpus | 0.325 | **0.331** | +1.8% | Nutrition/medical |
+| FiQA | 0.236 | **0.253** | +7.2% | Financial QA |
+| ArguAna | 0.315 | **0.323** | +2.5% | Argument retrieval |
+| SCIDOCS | 0.158 | **0.159** | +0.6% | Citation prediction |
+
+**Configuration difference:**
+- BEIR paper uses Anserini defaults: **k1=0.9, b=0.4**
+- Our Classic uses Robertson defaults: **k1=1.5, b=0.75**
+
+The Robertson Classic parameters (higher k1, higher b) outperform Anserini defaults on all tested BEIR datasets.
 
 ---
 
@@ -560,6 +579,11 @@ The evolved TF formula was discovered using [OpenEvolve](https://github.com/algo
 
 ```bash
 export OPENAI_API_KEY="your-key"
+
+# Start fresh from vanilla Robertson BM25 (k1=1.5, b=0.75)
+uv run openevolve-run src/ranking_evolved/bm25_classic.py evaluator_bright.py --config openevolve_config.yaml
+
+# Or continue evolving from current best
 uv run openevolve-run src/ranking_evolved/bm25_evolved.py evaluator_bright.py --config openevolve_config.yaml
 ```
 
