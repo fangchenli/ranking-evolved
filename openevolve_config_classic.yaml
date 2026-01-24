@@ -1,0 +1,153 @@
+# OpenEvolve configuration for Classic BM25 Seed Program
+#
+# Seed Program: src/ranking_evolved/bm25_classic.py (~1015 lines)
+#
+# GOAL: Evolve within the classic BM25 paradigm
+# - Optimize the standard BM25 formula (IDF × TF, summed over terms)
+# - Find optimal parameters for the target domain
+# - Discover improved IDF/TF formulations
+# - Keep the fundamental BM25 structure intact
+#
+# This is the CONSTRAINED approach - smallest search space, fastest convergence.
+#
+# Run with:
+#   export OPENAI_API_KEY="your-key"
+#   uv run openevolve-run src/ranking_evolved/bm25_classic.py evaluator_bright.py --config openevolve_config_classic.yaml
+#
+# Configure evaluation via env vars:
+#   BRIGHT_DOMAIN=biology (or aops, theoremqa_theorems, all)
+#   BRIGHT_SAMPLE_QUERIES=20 (for faster iteration)
+#   BRIGHT_TOKENIZER=simple (or lucene)
+
+max_iterations: 200
+log_level: "INFO"
+random_seed: 42
+diff_based_evolution: true
+max_code_length: 35000  # bm25_classic.py is ~1015 lines (~32k chars)
+
+llm:
+  models:
+    - name: "gpt-4o"
+      weight: 1.0
+  api_base: "https://api.openai.com/v1"
+  api_key: null  # falls back to OPENAI_API_KEY env var
+  temperature: 0.7
+  top_p: 0.95
+  max_tokens: 8192
+  timeout: 180
+  retries: 3
+  retry_delay: 5
+
+prompt:
+  system_message: |
+    You are evolving a CLASSIC BM25 ranking function for the BRIGHT benchmark.
+    
+    ## Philosophy
+    You are working within the classic BM25 paradigm. The goal is to optimize
+    the standard BM25 formula while keeping its fundamental structure:
+    
+        Score(D, Q) = Σ IDF(t) × TF(t, D)
+    
+    Do NOT try to fundamentally restructure the algorithm. Instead, focus on:
+    - Finding optimal parameter values
+    - Improving the IDF and TF formulas
+    - Better length normalization
+    - Query term weighting strategies
+    
+    ## Evolution Targets (in bm25_classic.py)
+    
+    1. `ClassicParameters` - Numeric constants
+       - k1: TF saturation (classic: 1.2, try 0.5-2.0)
+       - b: Length normalization (classic: 0.75, try 0.3-0.9)
+       - k3: Query TF saturation (classic: 8.0)
+    
+    2. `ClassicIDF.compute()` - IDF formula
+       - Classic: log((N - df + 0.5) / (df + 0.5))
+       - Alternatives: Lucene IDF, ATIRE IDF, clipped IDF
+       - Can produce negative values for common terms (consider fixing)
+    
+    3. `ClassicTF.compute()` - TF saturation formula
+       - Classic: (tf * (k1 + 1)) / (tf + k1 * norm)
+       - Consider: log damping, BM25L, BM25+, double saturation
+    
+    4. `ClassicLengthNorm.compute()` - Document length normalization
+       - Classic: 1 - b + b * (dl / avgdl)
+       - Consider: log-based, pivot normalization, sigmoid
+    
+    5. `ClassicQueryWeighting.compute_weights()` - Query term handling
+       - Mode: "unique" (bag-of-words), "sum_all", "saturated"
+       - Classic uses "unique" - each term contributes once
+    
+    6. `ClassicScoreAggregation.aggregate()` - How to combine term scores
+       - Mode: "sum" (classic), "weighted_sum", "max", "mean"
+       - Classic uses simple sum
+    
+    7. `BM25.score_kernel()` - The main scoring function
+       - Combines IDF, TF, and aggregation
+       - Primary evolution target for formula changes
+    
+    ## Classic BM25 Formula Reference
+    
+    IDF(t) = log((N - df(t) + 0.5) / (df(t) + 0.5))
+    
+    TF(t, D) = (f(t,D) × (k1 + 1)) / (f(t,D) + k1 × norm)
+    
+    norm = 1 - b + b × |D| / avgdl
+    
+    Score = Σ IDF(t) × TF(t, D)  for each query term t
+    
+    ## Guidelines
+    - Keep changes targeted to one component at a time
+    - Preserve the BM25 interface (Corpus, rank, score signatures)
+    - No new dependencies - only numpy and re are available
+    - Ensure numerical stability (add epsilon to denominators)
+    - Look for sections marked "===== EVOLVE THIS ====="
+    
+    ## Known Issues with Classic BM25
+    - Negative IDF for terms in >50% of documents
+    - Over-penalization of long documents
+    - No term proximity consideration
+    
+    ## Promising Directions
+    - Clip negative IDF to 0 or use Lucene-style IDF
+    - Try log-damped TF: log(1 + tf_saturated)
+    - Reduce b parameter (0.4 often works better than 0.75)
+    - Lower k1 for faster saturation (0.9 instead of 1.2)
+
+  evaluator_system_message: |
+    You review candidate BM25 ranking code for correctness and quality.
+    Check for:
+    - Numerical stability (no division by zero)
+    - Interface compatibility (Corpus, rank, score methods work)
+    - Meaningful ranking behavior (not all zeros or identical scores)
+    - Preservation of BM25 structure (IDF × TF pattern)
+
+  num_top_programs: 3
+  num_diverse_programs: 2
+  use_template_stochasticity: true
+  include_artifacts: true
+
+database:
+  in_memory: true
+  population_size: 200
+  archive_size: 50
+  num_islands: 3
+  migration_interval: 20
+  migration_rate: 0.1
+  feature_dimensions:
+    - "complexity"
+    - "diversity"
+  feature_bins: 10
+  log_prompts: true
+
+evaluator:
+  timeout: 900  # 15 minutes per evaluation
+  max_retries: 2
+  cascade_evaluation: false
+  parallel_evaluations: 1  # Sequential to avoid memory issues
+
+evolution_trace:
+  enabled: true
+  format: "jsonl"
+  include_code: true
+  include_prompts: false

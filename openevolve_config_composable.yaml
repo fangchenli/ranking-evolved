@@ -1,0 +1,194 @@
+# OpenEvolve configuration for Composable BM25 Seed Program
+#
+# Seed Program: src/ranking_evolved/bm25_composable.py (~650 lines)
+#
+# GOAL: Discover novel combinations of scoring primitives
+# - Mix and match building blocks from the primitives library
+# - Create new combinations not found in standard BM25
+# - Add new primitives when needed
+# - Explore different term scoring and aggregation strategies
+#
+# This is the MODERATE FREEDOM approach - building blocks can be combined freely.
+#
+# Run with:
+#   export OPENAI_API_KEY="your-key"
+#   uv run openevolve-run src/ranking_evolved/bm25_composable.py evaluator_bright.py --config openevolve_config_composable.yaml
+#
+# Configure evaluation via env vars:
+#   BRIGHT_DOMAIN=biology (or aops, theoremqa_theorems, all)
+#   BRIGHT_SAMPLE_QUERIES=20 (for faster iteration)
+#   BRIGHT_TOKENIZER=simple (or lucene)
+
+max_iterations: 300  # More iterations for larger search space
+log_level: "INFO"
+random_seed: 42
+diff_based_evolution: true
+max_code_length: 25000  # bm25_composable.py is ~650 lines (~20k chars)
+
+llm:
+  models:
+    - name: "gpt-4o"
+      weight: 1.0
+  api_base: "https://api.openai.com/v1"
+  api_key: null  # falls back to OPENAI_API_KEY env var
+  temperature: 0.8  # Slightly higher for more exploration
+  top_p: 0.95
+  max_tokens: 8192
+  timeout: 180
+  retries: 3
+  retry_delay: 5
+
+prompt:
+  system_message: |
+    You are evolving a COMPOSABLE ranking function for the BRIGHT benchmark.
+    
+    ## Philosophy
+    You have a library of scoring PRIMITIVES (building blocks). Your job is to:
+    1. Choose which primitives to use
+    2. Combine them in novel ways
+    3. Add new primitives when needed
+    4. Discover effective combinations not in standard BM25
+    
+    Think of it like LEGO blocks - the pieces are provided, you decide how to assemble them.
+    
+    ## Evolution Targets (in bm25_composable.py)
+    
+    ### 1. EvolvedParameters - All numeric constants
+    ```python
+    k1: float = 1.2      # TF saturation
+    b: float = 0.75      # Length normalization
+    k3: float = 8.0      # Query TF saturation
+    delta: float = 0.5   # Bonus for matching (BM25+/BM25L)
+    alpha: float = 1.0   # IDF weight
+    beta: float = 1.0    # TF weight
+    gamma: float = 0.0   # Coverage bonus weight
+    max_idf: float = 10.0
+    min_idf: float = 0.0
+    ```
+    
+    ### 2. ScoringPrimitives - Building blocks library
+    
+    **IDF Primitives:**
+    - `idf_classic(df, N)` - Robertson: log((N-df+0.5)/(df+0.5))
+    - `idf_lucene(df, N)` - Non-negative: log(1+(N-df+0.5)/(df+0.5))
+    - `idf_atire(df, N)` - Simple: log(N/df)
+    - `idf_bm25plus(df, N)` - BM25+: log((N+1)/df)
+    - `idf_smooth(df, N)` - Smoothed: log((N+0.5)/(df+0.5))
+    
+    **TF Primitives:**
+    - `tf_raw(tf)` - No transformation
+    - `tf_log(tf)` - Logarithmic: 1+log(tf)
+    - `tf_double_log(tf)` - Double log: 1+log(1+log(tf))
+    - `tf_boolean(tf)` - Binary: 1 if present, else 0
+    - `tf_augmented(tf, max_tf)` - Augmented: 0.5+0.5*(tf/max_tf)
+    
+    **Saturation Primitives:**
+    - `saturate(x, k)` - Basic: x/(x+k)
+    - `saturate_bm25(tf, k1, norm)` - BM25: (tf*(k1+1))/(tf+k1*norm)
+    - `saturate_bm25l(tf, k1, norm, delta)` - BM25L with delta
+    - `saturate_bm25plus(tf, k1, norm, delta)` - BM25+ with bonus
+    - `saturate_log(tf, k1, norm)` - Log-damped: log(1+bm25_sat)
+    
+    **Combination Primitives:**
+    - `multiply(*args)` - Product
+    - `add(*args)` - Sum
+    - `weighted_sum(values, weights)` - Weighted sum
+    - `geometric_mean(values)` - Geometric mean
+    - `harmonic_mean(values)` - Harmonic mean
+    - `soft_max(values, temp)` - Soft maximum
+    
+    **Query Primitives:**
+    - `query_weight_uniform(qtf, k3)` - All weight 1
+    - `query_weight_frequency(qtf, k3)` - Weight = qtf
+    - `query_weight_saturated(qtf, k3)` - BM25-style saturation
+    
+    **Bonus Primitives:**
+    - `coverage_bonus(matched, total)` - Reward coverage
+    - `rarity_boost(idf, threshold)` - Boost rare terms
+    
+    ### 3. TermScorer.score() - How to score a single term
+    Combine primitives to compute one term's contribution.
+    Example: `idf * saturate_log(tf) * rarity_boost(idf)`
+    
+    ### 4. DocumentScorer.score() - How to aggregate term scores
+    Combine term scores into document score.
+    Example: weighted_sum with coverage bonus.
+    
+    ### 5. QueryProcessor.process() - How to handle query terms
+    Choose query weighting strategy.
+    
+    ### 6. score_kernel() - Main orchestration
+    The full scoring pipeline.
+    
+    ## Example Novel Combinations
+    
+    ```python
+    # Example 1: Double saturation with rarity boost
+    idf = idf_lucene(df, N)
+    sat1 = saturate_bm25(tf, k1, norm)
+    sat2 = saturate(tf, k1 + 0.5)
+    boost = rarity_boost(idf, 4.0)
+    term_score = idf * log(1 + sat1 * sat2) * boost
+    
+    # Example 2: Geometric mean aggregation
+    term_scores = [idf * tf_component for term in query]
+    score = geometric_mean(term_scores) * coverage_bonus(matched, total)
+    
+    # Example 3: BM25L + BM25+ hybrid
+    tf_component = saturate_bm25l(tf, k1, norm, delta=0.5)
+    term_score = idf_bm25plus(df, N) * tf_component + delta
+    ```
+    
+    ## Guidelines
+    - Use existing primitives when possible
+    - Add new primitives to ScoringPrimitives class if needed
+    - Combine primitives in TermScorer.score() and DocumentScorer.score()
+    - Keep the overall structure (query → term scores → aggregation)
+    - Ensure numerical stability
+    - Look for sections marked "===== EVOLVE ====="
+    
+    ## Exploration Ideas
+    - Combine multiple IDF formulas (e.g., average of classic and lucene)
+    - Use different saturation for rare vs common terms
+    - Add coverage_bonus to the final score
+    - Try geometric_mean instead of sum for aggregation
+    - Create new primitives for domain-specific features
+
+  evaluator_system_message: |
+    You review candidate ranking code using composable primitives.
+    Check for:
+    - Correct use of primitives (right arguments, types)
+    - Numerical stability (no division by zero)
+    - Interface compatibility (BM25.rank() works correctly)
+    - Novel combinations (not just standard BM25)
+    - Any new primitives are well-defined
+
+  num_top_programs: 3
+  num_diverse_programs: 3  # More diversity for exploration
+  use_template_stochasticity: true
+  include_artifacts: true
+
+database:
+  in_memory: true
+  population_size: 250  # Larger population for more exploration
+  archive_size: 60
+  num_islands: 4  # More islands for diversity
+  migration_interval: 25
+  migration_rate: 0.1
+  feature_dimensions:
+    - "complexity"
+    - "diversity"
+  feature_bins: 10
+  log_prompts: true
+
+evaluator:
+  timeout: 900  # 15 minutes per evaluation
+  max_retries: 2
+  cascade_evaluation: false
+  parallel_evaluations: 1
+
+evolution_trace:
+  enabled: true
+  format: "jsonl"
+  include_code: true
+  include_prompts: false

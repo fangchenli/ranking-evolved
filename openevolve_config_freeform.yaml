@@ -1,0 +1,243 @@
+# OpenEvolve configuration for Freeform Ranking Seed Program
+#
+# Seed Program: src/ranking_evolved/bm25_freeform.py (~790 lines)
+#
+# GOAL: Discover novel ranking approaches beyond BM25
+# - Multiple scoring signals that can be combined
+# - Add entirely new relevance signals
+# - Change how signals are combined (linear, multiplicative, learned)
+# - Modify document/query representations
+# - Potentially discover something fundamentally new
+#
+# This is the MAXIMUM FREEDOM approach - largest search space, most potential for novelty.
+# WARNING: Higher risk of broken/nonsensical code. May need more iterations.
+#
+# Run with:
+#   export OPENAI_API_KEY="your-key"
+#   uv run openevolve-run src/ranking_evolved/bm25_freeform.py evaluator_bright.py --config openevolve_config_freeform.yaml
+#
+# Configure evaluation via env vars:
+#   BRIGHT_DOMAIN=biology (or aops, theoremqa_theorems, all)
+#   BRIGHT_SAMPLE_QUERIES=20 (for faster iteration)
+#   BRIGHT_TOKENIZER=simple (or lucene)
+
+max_iterations: 400  # More iterations needed for large search space
+log_level: "INFO"
+random_seed: 42
+diff_based_evolution: true
+max_code_length: 30000  # bm25_freeform.py is ~790 lines (~25k chars)
+
+llm:
+  models:
+    - name: "gpt-4o"
+      weight: 1.0
+  api_base: "https://api.openai.com/v1"
+  api_key: null  # falls back to OPENAI_API_KEY env var
+  temperature: 0.85  # Higher temperature for maximum exploration
+  top_p: 0.95
+  max_tokens: 8192
+  timeout: 180
+  retries: 3
+  retry_delay: 5
+
+prompt:
+  system_message: |
+    You are evolving a FREEFORM ranking function for the BRIGHT benchmark.
+    
+    ## Philosophy
+    This is NOT a BM25 implementation. It's a flexible multi-signal framework
+    where you can:
+    1. Define new relevance signals
+    2. Combine signals in arbitrary ways
+    3. Change document/query representations
+    4. Restructure the entire scoring pipeline
+    
+    Your goal is to DISCOVER something that works better than BM25, even if
+    it looks completely different from traditional term-matching approaches.
+    
+    ## Architecture Overview
+    
+    ```
+    Query ──→ ┌────────────────────────────────┐
+              │      Compute Signals           │
+              │  lexical | coverage | density  │ ← You can add more!
+              │  length  | rarity   | custom   │
+              └────────────────┬───────────────┘
+                               │
+                               ▼
+              ┌────────────────────────────────┐
+              │   SignalCombiner.combine()     │
+              │  linear | multiplicative | ... │ ← You choose strategy!
+              └────────────────┬───────────────┘
+                               │
+                               ▼
+                         Final Score
+    ```
+    
+    ## Evolution Targets (in bm25_freeform.py)
+    
+    ### 1. Config - ALL parameters (add new ones freely!)
+    ```python
+    # Traditional (may or may not use)
+    k1, b, k3 = 1.2, 0.75, 8.0
+    
+    # Signal weights (turn signals on/off)
+    weight_lexical: float = 1.0    # BM25-like matching
+    weight_coverage: float = 0.0   # Query coverage
+    weight_density: float = 0.0    # Term density
+    weight_position: float = 0.0   # Term position
+    weight_length: float = 0.0     # Document length
+    weight_rarity: float = 0.0     # Rare term bonus
+    weight_custom: float = 0.0     # Your new signal!
+    
+    # Combination strategy
+    combination_mode: str = "linear"  # or "multiplicative", "max", "learned"
+    ```
+    
+    ### 2. FeatureExtractors - Low-level feature extraction
+    - `term_frequency()` - TF in document
+    - `document_frequency()` - DF in corpus
+    - `inverse_document_frequency()` - IDF computation
+    - `term_density()` - TF / doc_length
+    - `relative_length()` - doc_length / avg_length
+    - `query_coverage()` - matched / total query terms
+    - `rarity_score()` - bonus for rare terms
+    - `term_burstiness()` - is term "bursty"?
+    - **ADD MORE!** - position, proximity, n-grams, etc.
+    
+    ### 3. Signals - Individual relevance signals
+    
+    **Existing signals you can modify:**
+    - `lexical_signal()` - BM25-like term matching (primary signal)
+    - `coverage_signal()` - Rewards matching more query terms
+    - `density_signal()` - Rewards term-dense documents
+    - `length_signal()` - Penalizes/rewards document length
+    - `rarity_signal()` - Extra boost for rare term matches
+    - `custom_signal()` - BLANK SLATE - create anything!
+    
+    **Each signal can be completely rewritten or new ones added!**
+    
+    ### 4. SignalCombiner - How to combine signals
+    
+    ```python
+    # Linear: w1*s1 + w2*s2 + w3*s3
+    # Multiplicative: (1+w1*s1) * (1+w2*s2) * (1+w3*s3) - 1
+    # Max: max(w1*s1, w2*s2, w3*s3)
+    # Learned: non-linear interactions (YOU DEFINE THIS!)
+    ```
+    
+    The `_learned_combination()` method is a blank slate for discovering
+    complex interactions between signals.
+    
+    ### 5. DocumentRepr / QueryRepr - Representations
+    Currently just term frequencies. You could add:
+    - Bigram frequencies
+    - Term positions
+    - Embeddings (if you define them)
+    - Intent classification
+    
+    ### 6. ScoringEngine.score() - Main scoring logic
+    Orchestrates signal computation and combination.
+    
+    ### 7. score_document() - Top-level entry point
+    Can restructure the entire pipeline.
+    
+    ## Example Novel Approaches
+    
+    ```python
+    # Example 1: Coverage-weighted lexical
+    def score_document(...):
+        lexical = Signals.lexical_signal(...)
+        coverage = Signals.coverage_signal(...)
+        # High coverage boosts lexical score
+        return lexical * (1 + coverage)
+    
+    # Example 2: Multi-factor with learned combination
+    Config.combination_mode = "learned"
+    Config.weight_coverage = 0.5
+    Config.weight_rarity = 0.3
+    
+    def _learned_combination(signals):
+        lex = signals["lexical"]
+        cov = signals["coverage"]
+        rar = signals["rarity"]
+        # Non-linear: coverage matters more for short queries
+        if cov > 0.9:
+            return lex * 1.5 + rar
+        elif cov > 0.5:
+            return lex * 1.2
+        else:
+            return lex * 0.8
+    
+    # Example 3: Custom signal for domain
+    def custom_signal(query_terms, doc_tf, ...):
+        # Reward documents with high average TF for matched terms
+        matched_tfs = [doc_tf.get(t, 0) for t in query_terms if doc_tf.get(t, 0) > 0]
+        if not matched_tfs:
+            return 0.0
+        avg_tf = sum(matched_tfs) / len(matched_tfs)
+        return math.log(1 + avg_tf * avg_tf)  # Quadratic bonus
+    ```
+    
+    ## Guidelines
+    - Feel free to restructure significantly
+    - Turn on signals by setting weights > 0
+    - Create new signals in Signals class
+    - Implement _learned_combination() for complex interactions
+    - Keep the BM25 interface (rank(), score() methods)
+    - Ensure numerical stability
+    - Look for sections marked "===== EVOLVE ====="
+    
+    ## High-Risk, High-Reward Ideas
+    - Completely ignore lexical signal, use only coverage + density
+    - Multiplicative combination of signals
+    - Custom signal based on term co-occurrence
+    - Query length-dependent weighting
+    - Non-linear signal interactions
+    
+    ## What NOT to Change
+    - Corpus class (infrastructure)
+    - Tokenize function (unless adding new representations)
+    - BM25 class interface (rank, score, batch_rank signatures)
+
+  evaluator_system_message: |
+    You review candidate freeform ranking code.
+    Check for:
+    - Code runs without errors
+    - Returns valid scores (not NaN, not all zeros)
+    - Interface compatibility (BM25.rank() works)
+    - Numerical stability
+    - Any novel signal definitions are sensible
+    - Signal weights and combination make sense together
+    
+    Be MORE TOLERANT of unconventional approaches - we want novelty!
+
+  num_top_programs: 4  # Keep more top programs for diversity
+  num_diverse_programs: 4  # Maximum diversity for exploration
+  use_template_stochasticity: true
+  include_artifacts: true
+
+database:
+  in_memory: true
+  population_size: 300  # Largest population for maximum exploration
+  archive_size: 80
+  num_islands: 5  # Most islands for maximum diversity
+  migration_interval: 30
+  migration_rate: 0.15  # Higher migration for cross-pollination
+  feature_dimensions:
+    - "complexity"
+    - "diversity"
+  feature_bins: 12
+  log_prompts: true
+
+evaluator:
+  timeout: 900  # 15 minutes per evaluation
+  max_retries: 3  # More retries since code may be less stable
+  cascade_evaluation: false
+  parallel_evaluations: 1
+
+evolution_trace:
+  enabled: true
+  format: "jsonl"
+  include_code: true
+  include_prompts: false
