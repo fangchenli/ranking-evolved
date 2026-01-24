@@ -482,7 +482,8 @@ ranking-evolved/
 ├── references/
 │   ├── bm25_formulas.md           # BM25 variant formulas
 │   └── evolved_variants.md        # Archive of evolved formulas
-├── evaluator_bright.py            # BRIGHT benchmark evaluator (OpenEvolve compatible)
+├── evaluator.py                   # Unified multi-benchmark evaluator (recommended)
+├── evaluator_bright.py            # BRIGHT benchmark evaluator
 ├── evaluator_beir.py              # BEIR benchmark evaluator
 └── openevolve_config.yaml         # OpenEvolve configuration
 ```
@@ -490,6 +491,53 @@ ranking-evolved/
 ---
 
 ## Running Evaluators
+
+### Unified Evaluator (Recommended)
+
+Evaluate on any combination of BRIGHT and BEIR benchmarks.
+
+```bash
+# Single benchmark
+uv run python evaluator.py src/ranking_evolved/bm25_classic.py --bright biology
+uv run python evaluator.py src/ranking_evolved/bm25_classic.py --beir scifact
+
+# Multiple datasets (comma-separated)
+uv run python evaluator.py src/ranking_evolved/bm25_classic.py \
+    --bright biology,earth_science,economics
+
+uv run python evaluator.py src/ranking_evolved/bm25_classic.py \
+    --beir scifact,nfcorpus,fiqa,trec-covid
+
+# Mix of benchmarks
+uv run python evaluator.py src/ranking_evolved/bm25_classic.py \
+    --bright biology,earth_science \
+    --beir scifact,nfcorpus
+
+# All datasets
+uv run python evaluator.py src/ranking_evolved/bm25_classic.py --bright all
+uv run python evaluator.py src/ranking_evolved/bm25_classic.py --beir all
+
+# Fast iteration with sampling
+uv run python evaluator.py src/ranking_evolved/bm25_classic.py \
+    --bright biology --beir scifact --sample-queries 20
+```
+
+**Options:**
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--bright` | `` | BRIGHT domains (comma-separated, or `all`) |
+| `--beir` | `` | BEIR datasets (comma-separated, or `all`) |
+| `--tokenizer` | `lucene` | Tokenizer (`simple` or `lucene`) |
+| `--k` | `10` | Cutoff for @k metrics |
+| `--sample-queries` | `0` | Sample N queries per dataset (0 = use all) |
+
+**Environment variables (for OpenEvolve):**
+```bash
+EVAL_BRIGHT_DOMAINS=biology,earth_science
+EVAL_BEIR_DATASETS=scifact,nfcorpus
+EVAL_SAMPLE_QUERIES=20
+EVAL_TOKENIZER=lucene
+```
 
 ### BRIGHT Evaluator
 
@@ -580,11 +628,15 @@ The evolved TF formula was discovered using [OpenEvolve](https://github.com/algo
 ```bash
 export OPENAI_API_KEY="your-key"
 
-# Start fresh from vanilla Robertson BM25 (k1=1.5, b=0.75)
-uv run openevolve-run src/ranking_evolved/bm25_classic.py evaluator_bright.py --config openevolve_config.yaml
+# Evaluate on multiple benchmarks (recommended)
+EVAL_BRIGHT_DOMAINS=biology,earth_science \
+EVAL_BEIR_DATASETS=scifact,nfcorpus \
+EVAL_SAMPLE_QUERIES=20 \
+uv run openevolve-run src/ranking_evolved/bm25_classic.py evaluator.py --config openevolve_config.yaml
 
-# Or continue evolving from current best
-uv run openevolve-run src/ranking_evolved/bm25_evolved.py evaluator_bright.py --config openevolve_config.yaml
+# Or single benchmark
+uv run openevolve-run src/ranking_evolved/bm25_classic.py evaluator_bright.py --config openevolve_config.yaml
+uv run openevolve-run src/ranking_evolved/bm25_classic.py evaluator_beir.py --config openevolve_config.yaml
 ```
 
 ---

@@ -38,6 +38,7 @@ from pathlib import Path
 import numpy as np
 from beir import util
 from beir.datasets.data_loader import GenericDataLoader
+from tqdm import tqdm
 
 from ranking_evolved.metrics import (
     average_precision,
@@ -130,7 +131,9 @@ def _load_beir_dataset(dataset_name: str, data_dir: str = DEFAULT_DATA_DIR):
 
     if not data_path.exists():
         # Download dataset
-        url = f"https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{dataset_name}.zip"
+        url = (
+            f"https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{dataset_name}.zip"
+        )
         print(f"Downloading {dataset_name} from {url}...")
         util.download_and_unzip(url, data_dir)
 
@@ -211,6 +214,7 @@ def evaluate_with_options(
     # else use simple tokenize_fn from module
 
     def _eval_single(dataset_name: str) -> dict[str, float]:
+        print(f"Loading {dataset_name} dataset...")
         corpus, queries, qrels = _load_beir_dataset(dataset_name, data_dir)
 
         # Convert corpus to list of tokenized documents
@@ -225,10 +229,22 @@ def evaluate_with_options(
             doc_texts.append(combined)
 
         # Tokenize documents
-        doc_tokens = [tokenize_fn(text) for text in doc_texts]
+        doc_tokens = [
+            tokenize_fn(text)
+            for text in tqdm(doc_texts, desc=f"Tokenizing {dataset_name}", unit="doc")
+        ]
 
         # Build corpus index
+        print(f"Building {dataset_name} index...")
         corpus_index = CorpusCls(doc_tokens, ids=doc_ids)
+
+        # Create BM25 scorer and pre-compute index (triggers lazy properties)
+        bm25 = BM25Impl(corpus_index)
+        # Force computation of cached properties before query loop
+        _ = corpus_index.vocabulary_size
+        _ = corpus_index.idf_array
+        _ = corpus_index.term_doc_matrix
+        print(f"Index built: {corpus_index.vocabulary_size:,} terms, {len(corpus_index):,} docs")
 
         # Prepare queries
         query_ids = list(queries.keys())
@@ -241,9 +257,6 @@ def evaluate_with_options(
             query_ids = [query_ids[i] for i in indices]
             query_texts = [query_texts[i] for i in indices]
 
-        # Create BM25 scorer
-        bm25 = BM25Impl(corpus_index)
-
         # Evaluate
         all_relevant = []
         all_retrieved = []
@@ -253,7 +266,12 @@ def evaluate_with_options(
         rr_scores = []
         ap_scores = []
 
-        for query_id, query_text in zip(query_ids, query_texts, strict=False):
+        for query_id, query_text in tqdm(
+            zip(query_ids, query_texts, strict=False),
+            total=len(query_ids),
+            desc=f"Evaluating {dataset_name}",
+            unit="query",
+        ):
             query_tokens = tokenize_fn(query_text)
             ranked_indices, _ = bm25.rank(query_tokens)
 

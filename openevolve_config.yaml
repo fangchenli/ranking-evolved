@@ -14,12 +14,17 @@
 #
 # Run with:
 #   export OPENAI_API_KEY="your-key"
-#   uv run openevolve-run src/ranking_evolved/bm25_classic.py evaluator_bright.py --config openevolve_config.yaml
+#   uv run openevolve-run src/ranking_evolved/bm25_classic.py evaluator.py --config openevolve_config.yaml
 #
-# Configure evaluation via env vars:
-#   BRIGHT_DOMAIN=aops (or biology, theoremqa_theorems, all)
-#   BRIGHT_SAMPLE_QUERIES=20 (for faster iteration)
-#   BRIGHT_TOKENIZER=simple (or lucene)
+# Configure evaluation via env vars (unified evaluator):
+#   EVAL_BRIGHT_DOMAINS=biology,earth_science  # Comma-separated, or "all"
+#   EVAL_BEIR_DATASETS=scifact,nfcorpus        # Comma-separated, or "all"
+#   EVAL_SAMPLE_QUERIES=20                      # Sample N queries (0 = all)
+#   EVAL_TOKENIZER=lucene                       # simple or lucene
+#
+# Or use single-benchmark evaluators:
+#   uv run openevolve-run ... evaluator_bright.py  (BRIGHT only)
+#   uv run openevolve-run ... evaluator_beir.py    (BEIR only)
 
 max_iterations: 200
 log_level: "INFO"

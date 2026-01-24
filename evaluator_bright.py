@@ -23,8 +23,9 @@ from collections.abc import Callable
 from functools import cache
 
 import numpy as np
-from datasets import load_dataset
+from tqdm import tqdm
 
+from datasets import load_dataset
 from ranking_evolved.metrics import (
     average_precision,
     mean_average_precision,
@@ -180,12 +181,24 @@ def evaluate_with_options(
     # else use simple tokenize_fn from module
 
     def _eval_single(split: str) -> dict[str, float]:
+        print(f"Loading {domain} dataset...")
         documents, examples = _bright_raw(split)
 
         # Tokenize documents
-        doc_tokens = [tokenize_fn(doc["content"]) for doc in documents]
+        doc_tokens = [
+            tokenize_fn(doc["content"])
+            for doc in tqdm(documents, desc=f"Tokenizing {domain}", unit="doc")
+        ]
         doc_ids = [doc["id"] for doc in documents]
+
+        # Build corpus index
+        print(f"Building {domain} index...")
         corpus = CorpusCls(doc_tokens, ids=doc_ids)
+        # Force computation of cached properties before query loop
+        _ = corpus.vocabulary_size
+        _ = corpus.idf_array
+        _ = corpus.term_doc_matrix
+        print(f"Index built: {corpus.vocabulary_size:,} terms, {len(corpus):,} docs")
 
         raw_queries = [example["query"] for example in examples]
         gold_id_lists = [example["gold_ids"] for example in examples]
@@ -222,7 +235,12 @@ def evaluate_with_options(
         rr_scores = []
         ap_scores = []
 
-        for raw_query, gold in zip(raw_queries, gold_indices, strict=False):
+        for raw_query, gold in tqdm(
+            zip(raw_queries, gold_indices, strict=False),
+            total=len(raw_queries),
+            desc=f"Evaluating {domain}",
+            unit="query",
+        ):
             query_tokens = tokenize_fn(raw_query)
             ranked_indices, _ = bm25.rank(query_tokens)
 
