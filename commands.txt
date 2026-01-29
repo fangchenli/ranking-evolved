@@ -1,0 +1,9 @@
+# Set the exclusions (everything NOT in our fast set)
+export EVAL_EXCLUDE_DATASETS="dl19,dl20,fever,climate-fever,hotpotqa,dbpedia-entity,nq,quora,webis-touche2020,cqadupstack,leetcode,aops,theoremqa_questions,robotics,psychology,sustainable_living"
+
+# Set your API key
+export OPENAI_API_KEY="your-key"
+
+# Run OpenEvolve with your preferred seed program
+uv run openevolve-run src/ranking_evolved/bm25_freeform_fast.py evaluator_parallel.py --config openevolve_config_freeform.yaml
+

@@ -12,12 +12,14 @@
 #
 # Run with:
 #   export OPENAI_API_KEY="your-key"
-#   uv run openevolve-run src/ranking_evolved/bm25_composable.py evaluator_bright.py --config openevolve_config_composable.yaml
+#   uv run openevolve-run src/ranking_evolved/bm25_composable.py evaluator_parallel.py --config openevolve_config_composable.yaml
 #
-# Configure evaluation via env vars:
-#   BRIGHT_DOMAIN=biology (or aops, theoremqa_theorems, all)
-#   BRIGHT_SAMPLE_QUERIES=20 (for faster iteration)
-#   BRIGHT_TOKENIZER=simple (or lucene)
+# Environment variables for evaluation:
+#   EVAL_BENCHMARKS=all          # all | bright | beir | bright+beir
+#   EVAL_SAMPLE_QUERIES=20       # Sample N queries per dataset (0 = all)
+#   EVAL_TOKENIZER=lucene        # simple or lucene
+#   EVAL_MAX_WORKERS=0           # 0 = auto (based on cores/memory)
+#   EVAL_THREADS_PER_WORKER=8    # Threads for tokenization
 
 max_iterations: 300  # More iterations for larger search space
 log_level: "INFO"
@@ -40,7 +42,21 @@ llm:
 
 prompt:
   system_message: |
-    You are evolving a COMPOSABLE ranking function for the BRIGHT benchmark.
+    You are evolving a COMPOSABLE ranking function evaluated on IR benchmarks.
+    
+    ## Evaluation Metrics
+    You receive detailed metrics for each dataset:
+    - nDCG@10: Normalized Discounted Cumulative Gain (ranking quality)
+    - Recall@100: Coverage metric (retrieval completeness)
+    - index_time_ms: Time to tokenize corpus and build index
+    - query_time_ms: Time to evaluate all queries
+    
+    Aggregate metrics:
+    - avg_ndcg@10: Macro-average across all datasets
+    - avg_recall@100: Macro-average across all datasets
+    - combined_score: (avg_ndcg@10 + avg_recall@100) / 2
+    
+    Use per-dataset metrics to identify weak spots and optimize accordingly.
     
     ## Philosophy
     You have a library of scoring PRIMITIVES (building blocks). Your job is to:
@@ -97,12 +113,10 @@ prompt:
     - `harmonic_mean(values)` - Harmonic mean
     - `soft_max(values, temp)` - Soft maximum
     
-    **Query Primitives:**
+    **Query/Bonus Primitives:**
     - `query_weight_uniform(qtf, k3)` - All weight 1
     - `query_weight_frequency(qtf, k3)` - Weight = qtf
     - `query_weight_saturated(qtf, k3)` - BM25-style saturation
-    
-    **Bonus Primitives:**
     - `coverage_bonus(matched, total)` - Reward coverage
     - `rarity_boost(idf, threshold)` - Boost rare terms
     
@@ -120,25 +134,6 @@ prompt:
     ### 6. score_kernel() - Main orchestration
     The full scoring pipeline.
     
-    ## Example Novel Combinations
-    
-    ```python
-    # Example 1: Double saturation with rarity boost
-    idf = idf_lucene(df, N)
-    sat1 = saturate_bm25(tf, k1, norm)
-    sat2 = saturate(tf, k1 + 0.5)
-    boost = rarity_boost(idf, 4.0)
-    term_score = idf * log(1 + sat1 * sat2) * boost
-    
-    # Example 2: Geometric mean aggregation
-    term_scores = [idf * tf_component for term in query]
-    score = geometric_mean(term_scores) * coverage_bonus(matched, total)
-    
-    # Example 3: BM25L + BM25+ hybrid
-    tf_component = saturate_bm25l(tf, k1, norm, delta=0.5)
-    term_score = idf_bm25plus(df, N) * tf_component + delta
-    ```
-    
     ## Guidelines
     - Use existing primitives when possible
     - Add new primitives to ScoringPrimitives class if needed
@@ -146,22 +141,23 @@ prompt:
     - Keep the overall structure (query → term scores → aggregation)
     - Ensure numerical stability
     - Look for sections marked "===== EVOLVE ====="
-    
-    ## Exploration Ideas
-    - Combine multiple IDF formulas (e.g., average of classic and lucene)
-    - Use different saturation for rare vs common terms
-    - Add coverage_bonus to the final score
-    - Try geometric_mean instead of sum for aggregation
-    - Create new primitives for domain-specific features
+    - Balance ranking quality (nDCG) with efficiency (index/query time)
+    - Use per-dataset metrics to identify which datasets need improvement
 
   evaluator_system_message: |
     You review candidate ranking code using composable primitives.
+    
     Check for:
     - Correct use of primitives (right arguments, types)
     - Numerical stability (no division by zero)
     - Interface compatibility (BM25.rank() works correctly)
     - Novel combinations (not just standard BM25)
     - Any new primitives are well-defined
+    
+    The LLM receives per-dataset metrics. Look for:
+    - Datasets where nDCG improved/degraded significantly
+    - Balance between ranking quality and speed
+    - Generalization across different benchmark types
 
   num_top_programs: 3
   num_diverse_programs: 3  # More diversity for exploration
@@ -182,10 +178,10 @@ database:
   log_prompts: true
 
 evaluator:
-  timeout: 900  # 15 minutes per evaluation
+  timeout: 3600  # 1 hour - multiple datasets can take time even with parallelism
   max_retries: 2
   cascade_evaluation: false
-  parallel_evaluations: 1
+  parallel_evaluations: 1  # Evaluator handles parallelism internally
 
 evolution_trace:
   enabled: true

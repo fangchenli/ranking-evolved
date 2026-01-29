@@ -1,22 +1,24 @@
-# OpenEvolve configuration for BM25 ranking evolution (Classic seed)
+# OpenEvolve configuration for Parallelized Full-Benchmark Evaluation
 #
-# Seed Program: src/ranking_evolved/bm25_classic.py (~700 lines)
+# Uses evaluator_parallel.py which evaluates on ALL 31 datasets:
+# - BRIGHT: 12 reasoning-intensive retrieval domains
+# - BEIR: 17 heterogeneous IR datasets
+# - TREC DL: 2 Deep Learning Track datasets (DL19, DL20)
 #
-# Evolution targets:
-# 1. ClassicParameters - k1, b, k3
-# 2. ClassicStopwords - stopword list
-# 3. ClassicStemmer - stemming rules
-# 4. ClassicTokenizer - tokenization pipeline
-# 5. ClassicIDF - IDF formula
-# 6. ClassicTF - TF saturation formula
-# 7. ClassicLengthNorm - document length normalization
-# 8. ClassicQueryWeighting - query term handling
-# 9. ClassicScoreAggregation - score combination
-# 10. BM25.score_kernel() - main scoring function
+# Parallelization Strategy (112 cores, 440GB RAM):
+# - Level 1: Dataset-level parallelism (ProcessPool)
+# - Level 2: Tokenization parallelism (ThreadPool within each worker)
+# - Level 3: Vectorized BM25 (NumPy BLAS)
+# - Memory-aware scheduling: small/medium/large batching
+#
+# Metrics returned to LLM:
+# - Per-dataset: nDCG@10, Recall@100, index_time_ms, query_time_ms
+# - Aggregate: avg_nDCG@10, avg_Recall@100, combined_score
+# - Timing: total_index_time_ms, total_query_time_ms
 #
 # Run with:
 #   export OPENAI_API_KEY="your-key"
-#   uv run openevolve-run src/ranking_evolved/bm25_classic.py evaluator_parallel.py --config openevolve_config.yaml
+#   EVAL_SAMPLE_QUERIES=20 uv run openevolve-run src/ranking_evolved/bm25_classic.py evaluator_parallel.py --config openevolve_config_parallel.yaml
 #
 # Environment variables for evaluation:
 #   EVAL_BENCHMARKS=all          # all | bright | beir | bright+beir
@@ -29,14 +31,14 @@ max_iterations: 200
 log_level: "INFO"
 random_seed: 42
 diff_based_evolution: true
-max_code_length: 30000  # bm25_classic.py is ~700 lines (~21k chars) with all evolution targets
+max_code_length: 30000
 
 llm:
   models:
     - name: "gpt-4o"
       weight: 1.0
   api_base: "https://api.openai.com/v1"
-  api_key: null  # falls back to OPENAI_API_KEY env var
+  api_key: null
   temperature: 0.7
   top_p: 0.95
   max_tokens: 8192
@@ -47,7 +49,7 @@ llm:
 prompt:
   system_message: |
     You are evolving a BM25 ranking function evaluated on IR benchmarks.
-    
+
     ## Evaluation Metrics
     You receive detailed metrics for each dataset:
     - nDCG@10: Normalized Discounted Cumulative Gain (ranking quality)
@@ -59,6 +61,11 @@ prompt:
     - avg_ndcg@10: Macro-average across all datasets
     - avg_recall@100: Macro-average across all datasets
     - combined_score: (avg_ndcg@10 + avg_recall@100) / 2
+
+    ## Evaluation Scope (configurable via EVAL_BENCHMARKS env var)
+    - BRIGHT: 12 reasoning-intensive domains (biology, earth_science, economics, ...)
+    - BEIR: 17 heterogeneous datasets (scifact, nfcorpus, trec-covid, ...)
+    - TREC DL: 2 Deep Learning Track datasets (DL19, DL20)
     
     Use per-dataset metrics to identify weak spots and optimize accordingly.
 
@@ -87,21 +94,20 @@ prompt:
     - Preserve BM25 interface (Corpus, rank signatures)
     - No new dependencies - only numpy and re are available
     - Ensure numerical stability (avoid division by zero)
-    - Infrastructure (Corpus, PorterStemmer) is imported - don't redefine
-    - Consider both ranking quality (nDCG) AND efficiency (index/query time)
-    - Use per-dataset metrics to identify weak spots
+    - Consider both ranking quality (nDCG) AND speed (index/query time)
+    - Look at per-dataset metrics to identify weak spots
 
     ## Areas to Explore
-    - Different IDF smoothing/scaling (log1p, sqrt, clipping, etc.)
+    - Different IDF smoothing/scaling (log1p, sqrt, clipping)
     - Alternative TF saturation curves (log damping, double saturation)
     - Non-linear score combinations
     - Query weighting modes (sum_all, saturated)
     - Score aggregation strategies (max, mean vs sum)
-    - Stopword/stemming customization
-    - Parameter tuning (k1, b, k3)
+    - Parameter tuning (k1, b, k3) - optimal varies by domain
+    - Efficiency: vectorized operations, avoid Python loops
 
   evaluator_system_message: |
-    You review candidate BM25 ranking code evaluated on multiple IR datasets.
+    You review candidate BM25 ranking code evaluated on 31 datasets.
     
     Check for:
     - Numerical stability (no NaN, no division by zero)
@@ -112,7 +118,7 @@ prompt:
     The LLM receives per-dataset metrics. Look for:
     - Datasets where nDCG improved/degraded significantly
     - Balance between ranking quality and speed
-    - Generalization across different benchmark types
+    - Generalization across benchmark types (BRIGHT vs BEIR vs TREC DL)
 
   num_top_programs: 3
   num_diverse_programs: 2
@@ -133,7 +139,7 @@ database:
   log_prompts: true
 
 evaluator:
-  timeout: 3600  # 1 hour - multiple datasets can take time even with parallelism
+  timeout: 3600  # 1 hour - 31 datasets can take time even with parallelism
   max_retries: 2
   cascade_evaluation: false
   parallel_evaluations: 1  # Evaluator handles parallelism internally

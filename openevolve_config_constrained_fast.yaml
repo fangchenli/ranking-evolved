@@ -1,0 +1,162 @@
+# OpenEvolve configuration for Constrained FAST BM25 Seed Program
+#
+# Seed Program: src/ranking_evolved/bm25_constrained_fast.py (~805 lines)
+#
+# GOAL: Evolve the optimized BM25 implementation with constrained search space
+# - Optimize the standard BM25 formula (IDF × TF, summed over terms)
+# - Find optimal parameters for the target domain
+# - Discover improved IDF/TF formulations
+# - Keep the fundamental BM25 structure intact
+#
+# This config uses FAST DATASETS ONLY (excludes slow ones: DL19, DL20, fever,
+# climate-fever, hotpotqa, dbpedia-entity, nq, quora)
+#
+# Run with:
+#   export OPENAI_API_KEY="your-key"
+#   export EVAL_EXCLUDE_DATASETS="dl19,dl20,fever,climate-fever,hotpotqa,dbpedia-entity,nq,quora"
+#   uv run openevolve-run src/ranking_evolved/bm25_constrained_fast.py evaluator_parallel.py --config openevolve_config_constrained_fast.yaml
+#
+# Expected evaluation time per candidate: ~5-10 minutes (vs 3+ hours with all datasets)
+#
+# Datasets included (24 total):
+#   BRIGHT (12): pony, theoremqa_theorems, economics, psychology, biology,
+#                sustainable_living, robotics, stackoverflow, earth_science,
+#                aops, theoremqa_questions, leetcode
+#   BEIR (12):   nfcorpus, scifact, arguana, scidocs, fiqa, trec-covid,
+#                webis-touche2020, msmarco, cqadupstack, signal1m, 
+#                trec-news, bioasq (some may require special access)
+
+max_iterations: 200
+log_level: "INFO"
+random_seed: 42
+diff_based_evolution: true
+max_code_length: 25000  # bm25_constrained_fast.py is ~805 lines (~27k chars)
+
+llm:
+  models:
+    - name: "gpt-4o"
+      weight: 1.0
+  api_base: "https://api.openai.com/v1"
+  api_key: null  # falls back to OPENAI_API_KEY env var
+  temperature: 0.7
+  top_p: 0.95
+  max_tokens: 8192
+  timeout: 180
+  retries: 3
+  retry_delay: 5
+
+prompt:
+  system_message: |
+    You are evolving a CONSTRAINED BM25 ranking function evaluated on IR benchmarks.
+    
+    ## Evaluation Metrics
+    You receive detailed metrics for each dataset:
+    - nDCG@10: Normalized Discounted Cumulative Gain (ranking quality)
+    - Recall@100: Coverage metric (retrieval completeness)
+    - index_time_ms: Time to tokenize corpus and build index
+    - query_time_ms: Time to evaluate all queries
+    
+    Aggregate metrics:
+    - avg_ndcg@10: Macro-average across all datasets
+    - avg_recall@100: Macro-average across all datasets
+    - combined_score: (avg_ndcg@10 + avg_recall@100) / 2
+    
+    Use per-dataset metrics to identify weak spots and optimize accordingly.
+    
+    ## Code Structure (bm25_constrained_fast.py)
+    
+    The code has 6 clearly marked EVOLUTION TARGETs:
+    
+    ### 1. Parameters (class) - Lines 69-84
+    ```python
+    class Parameters:
+        k1: float = 0.9   # TF saturation (Pyserini default)
+        b: float = 0.4    # Length normalization (Pyserini default)
+        k3: float = 8.0   # Query TF saturation
+    ```
+    Try: k1 in [0.5, 2.0], b in [0.0, 1.0]
+    
+    ### 2. IDFFormula.compute() - Lines 90-118
+    ```python
+    @staticmethod
+    def compute(df: NDArray[np.float64], N: int) -> NDArray[np.float64]:
+        # ===== EVOLVE THIS FORMULA =====
+        return np.log(1 + (N - df + 0.5) / (df + 0.5))  # Lucene IDF
+    ```
+    Alternatives: ATIRE `log(N/df)`, Robertson `log((N-df+0.5)/(df+0.5))`
+    
+    ### 3. TFFormula.compute() - Lines 125-163
+    ```python
+    @staticmethod
+    def compute(tf: NDArray[np.float64], k1: float, norm: NDArray[np.float64]) -> NDArray[np.float64]:
+        # ===== EVOLVE THIS FORMULA =====
+        return tf / (tf + k1 * norm)  # Lucene formula
+    ```
+    Alternatives: `(tf*(k1+1))/(tf+k1*norm)` (Robertson), log-damped
+    
+    ### 4. LengthNorm.compute() - Lines 169-201
+    ```python
+    @staticmethod
+    def compute(doc_lengths: NDArray[np.float64], avgdl: float, b: float) -> NDArray[np.float64]:
+        # ===== EVOLVE THIS FORMULA =====
+        return 1 - b + b * (doc_lengths / avgdl)
+    ```
+    
+    ### 5. QueryWeighting.get_weights() - Lines 208-255
+    Controls how repeated query terms are weighted ("unique", "count", "saturated")
+    
+    ### 6. ScoreAggregation.aggregate() - Lines 262-306
+    Controls how term scores are combined ("sum", "weighted_sum", "max", "mean")
+    
+    ## Guidelines
+    - Focus on formulas marked with `===== EVOLVE THIS FORMULA =====`
+    - Keep changes targeted to one component at a time
+    - Preserve the BM25 interface (Corpus, rank, score signatures)
+    - Ensure numerical stability (add epsilon to denominators)
+    - This is OPTIMIZED code - don't remove the sparse matrix or inverted index
+    
+    ## Promising Directions
+    - Try log-damped TF: `log(1 + tf_saturated)`
+    - BM25+ delta bonus for matching terms
+    - Per-domain k1/b tuning based on avgdl
+    - Combine multiple IDF formulas
+
+  evaluator_system_message: |
+    You review candidate BM25 ranking code evaluated on multiple IR datasets.
+    
+    Check for:
+    - Numerical stability (no division by zero, no NaN)
+    - Interface compatibility (Corpus, rank, score methods work)
+    - Meaningful ranking behavior (not all zeros or identical scores)
+    - Preservation of optimizations (inverted index, sparse matrix)
+    - Preservation of BM25 structure (IDF × TF pattern)
+
+  num_top_programs: 3
+  num_diverse_programs: 2
+  use_template_stochasticity: true
+  include_artifacts: true
+
+database:
+  in_memory: true
+  population_size: 200
+  archive_size: 50
+  num_islands: 3
+  migration_interval: 20
+  migration_rate: 0.1
+  feature_dimensions:
+    - "complexity"
+    - "diversity"
+  feature_bins: 10
+  log_prompts: true
+
+evaluator:
+  timeout: 900  # 15 minutes - fast datasets only
+  max_retries: 2
+  cascade_evaluation: false
+  parallel_evaluations: 1  # Evaluator handles parallelism internally
+
+evolution_trace:
+  enabled: true
+  format: "jsonl"
+  include_code: true
+  include_prompts: false
