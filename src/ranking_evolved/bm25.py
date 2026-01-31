@@ -55,8 +55,49 @@ class QueryTermMode(Enum):
 # Tokenization
 # =============================================================================
 
-# Lucene English stopwords (from org.apache.lucene.analysis.en.EnglishAnalyzer)
-# This is the complete set from Lucene's EnglishAnalyzer default stopwords
+# Official Lucene/Pyserini English stopwords (33 words)
+# From org.apache.lucene.analysis.en.EnglishAnalyzer.ENGLISH_STOP_WORDS_SET
+# Use this for Pyserini-compatible tokenization
+LUCENE_STOPWORDS: frozenset[str] = frozenset(
+    [
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "but",
+        "by",
+        "for",
+        "if",
+        "in",
+        "into",
+        "is",
+        "it",
+        "no",
+        "not",
+        "of",
+        "on",
+        "or",
+        "such",
+        "that",
+        "the",
+        "their",
+        "then",
+        "there",
+        "these",
+        "they",
+        "this",
+        "to",
+        "was",
+        "will",
+        "with",
+    ]
+)
+
+# Extended English stopwords (71 words) - legacy, kept for backwards compatibility
+# Includes LUCENE_STOPWORDS plus additional pronouns, auxiliary verbs, etc.
 ENGLISH_STOPWORDS: frozenset[str] = frozenset(
     [
         "a",
@@ -178,10 +219,10 @@ class LuceneTokenizer:
         Initialize the tokenizer.
 
         Args:
-            stopwords: Set of stopwords to remove. Defaults to ENGLISH_STOPWORDS.
+            stopwords: Set of stopwords to remove. Defaults to LUCENE_STOPWORDS (33 words).
             stem: Whether to apply Porter stemming. Defaults to True.
         """
-        self.stopwords = stopwords if stopwords is not None else ENGLISH_STOPWORDS
+        self.stopwords = stopwords if stopwords is not None else LUCENE_STOPWORDS
         self.stem = stem
         self._stemmer = PorterStemmer() if stem else None
 
@@ -2227,6 +2268,7 @@ __all__ = [
     "LuceneTokenizer",
     "lucene_tokenize",
     "PorterStemmer",
+    "LUCENE_STOPWORDS",
     "ENGLISH_STOPWORDS",
     # IDF strategies
     "IDFStrategy",

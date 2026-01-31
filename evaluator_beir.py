@@ -262,6 +262,7 @@ def evaluate_with_options(
         all_retrieved = []
         precision_scores = []
         recall_scores = []
+        recall_100_scores = []
         ndcg_scores = []
         rr_scores = []
         ap_scores = []
@@ -298,6 +299,7 @@ def evaluate_with_options(
 
             precision_scores.append(precision_at_k(relevant, retrieved, k))
             recall_scores.append(recall_at_k(relevant, retrieved, k))
+            recall_100_scores.append(recall_at_k(relevant, retrieved, 100))
             ndcg_scores.append(ndcg_at_k(relevant, retrieved, k))
             rr_scores.append(reciprocal_rank(relevant, retrieved))
             ap_scores.append(average_precision(relevant, retrieved))
@@ -308,6 +310,7 @@ def evaluate_with_options(
         metrics = {
             "precision_at_k": float(np.mean(precision_scores)),
             "recall_at_k": float(np.mean(recall_scores)),
+            "recall_at_100": float(np.mean(recall_100_scores)),
             "ndcg_at_k": float(np.mean(ndcg_scores)),
             "reciprocal_rank": float(np.mean(rr_scores)),
             "mean_average_precision": mean_average_precision(all_relevant, all_retrieved),
@@ -335,6 +338,7 @@ def evaluate_with_options(
         macro_accumulators = {
             "precision_at_k": [],
             "recall_at_k": [],
+            "recall_at_100": [],
             "ndcg_at_k": [],
             "mean_average_precision": [],
             "mean_reciprocal_rank": [],

@@ -1,0 +1,68 @@
+[
+  {
+    "dataset": "scifact",
+    "ours_ndcg": 0.6776773829324205,
+    "ours_recall": 0.9253333333333335,
+    "pyserini_ndcg": 0.6789094274508312,
+    "pyserini_recall": 0.9253333333333335,
+    "ndcg_diff": -0.0012320445184106354,
+    "recall_diff": 0.0,
+    "ours_time_s": 5.726574582979083,
+    "pyserini_time_s": 8.5010229999898
+  },
+  {
+    "dataset": "nfcorpus",
+    "ours_ndcg": 0.3201472376981377,
+    "ours_recall": 0.2534749101908069,
+    "pyserini_ndcg": 0.0,
+    "pyserini_recall": 0.0,
+    "ndcg_diff": 0.3201472376981377,
+    "recall_diff": 0.2534749101908069,
+    "ours_time_s": 2.4161187909776345,
+    "pyserini_time_s": 1.4515468750614673
+  },
+  {
+    "dataset": "fiqa",
+    "ours_ndcg": 0.23532978674734278,
+    "ours_recall": 0.5400261732437659,
+    "pyserini_ndcg": 0.2360668075849401,
+    "pyserini_recall": 0.5394860497869757,
+    "ndcg_diff": -0.0007370208375973297,
+    "recall_diff": 0.0005401234567902202,
+    "ours_time_s": 80.91684433293995,
+    "pyserini_time_s": 8.842870459076948
+  },
+  {
+    "dataset": "arguana",
+    "ours_ndcg": 0.3029846319887384,
+    "ours_recall": 0.9357601713062098,
+    "pyserini_ndcg": 0.30092344524942083,
+    "pyserini_recall": 0.9357601713062098,
+    "ndcg_diff": 0.0020611867393175443,
+    "recall_diff": 0.0,
+    "ours_time_s": 213.96295695798472,
+    "pyserini_time_s": 20.466665958054364
+  },
+  {
+    "dataset": "scidocs",
+    "ours_ndcg": 0.14982428797686223,
+    "ours_recall": 0.3473333333333334,
+    "pyserini_ndcg": 0.14904809869978664,
+    "pyserini_recall": 0.34773333333333334,
+    "ndcg_diff": 0.0007761892770755952,
+    "recall_diff": -0.00039999999999995595,
+    "ours_time_s": 53.493079707957804,
+    "pyserini_time_s": 10.322682083002292
+  },
+  {
+    "dataset": "trec-covid",
+    "ours_ndcg": 0.670425246904879,
+    "ours_recall": 0.10903587505330523,
+    "pyserini_ndcg": 0.6700378065744781,
+    "pyserini_recall": 0.10909797387983748,
+    "ndcg_diff": 0.0003874403304009455,
+    "recall_diff": -6.209882653225585e-05,
+    "ours_time_s": 69.0908575829817,
+    "pyserini_time_s": 6.977390708983876
+  }
+]

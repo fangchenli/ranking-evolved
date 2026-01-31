@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 from ranking_evolved.bm25 import (
-    ENGLISH_STOPWORDS,
+    LUCENE_STOPWORDS,
     Corpus,
     LuceneTokenizer,
     PorterStemmer,
@@ -84,8 +84,8 @@ class ClassicStopwords:
     """
 
     # ===== EVOLVE THIS SET =====
-    # Start with standard English stopwords
-    words: frozenset[str] = ENGLISH_STOPWORDS
+    # Start with Lucene English stopwords (33 words)
+    words: frozenset[str] = LUCENE_STOPWORDS
 
     # Additional stopwords to add (domain-specific)
     extra_stopwords: frozenset[str] = frozenset()
@@ -712,7 +712,7 @@ __all__ = [
     "LuceneTokenizer",
     "lucene_tokenize",
     "PorterStemmer",
-    "ENGLISH_STOPWORDS",
+    "LUCENE_STOPWORDS",
     # Classic components
     "ClassicParameters",
     "ClassicStopwords",

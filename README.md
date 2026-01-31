@@ -74,9 +74,9 @@ tokens = tokenizer("The quick brown fox's running quickly!")
 | 4 | StopFilter | `['the', 'fox']` | `['fox']` | Remove common words |
 | 5 | PorterStemFilter | `['running']` | `['run']` | Reduce to word stems |
 
-**Stopwords removed** (71 words): `a`, `an`, `and`, `are`, `as`, `at`, `be`, `been`, `but`, `by`, `can`, `do`, `for`, `from`, `had`, `has`, `have`, `he`, `her`, `him`, `his`, `how`, `i`, `if`, `in`, `into`, `is`, `it`, `its`, `me`, `my`, `no`, `not`, `of`, `on`, `or`, `our`, `out`, `s`, `she`, `so`, `some`, `such`, `t`, `than`, `that`, `the`, `their`, `them`, `then`, `there`, `these`, `they`, `this`, `to`, `too`, `us`, `very`, `was`, `we`, `were`, `what`, `when`, `where`, `which`, `who`, `will`, `with`, `would`, `you`, `your`
+**Stopwords removed** (33 words, Lucene default): `a`, `an`, `and`, `are`, `as`, `at`, `be`, `but`, `by`, `for`, `if`, `in`, `into`, `is`, `it`, `no`, `not`, `of`, `on`, `or`, `such`, `that`, `the`, `their`, `then`, `there`, `these`, `they`, `this`, `to`, `was`, `will`, `with`
 
-> **Note:** Our stopword list (71 words) is larger than Lucene/Pyserini's default (33 words). Lucene's `EnglishAnalyzer` only removes: `a`, `an`, `and`, `are`, `as`, `at`, `be`, `but`, `by`, `for`, `if`, `in`, `into`, `is`, `it`, `no`, `not`, `of`, `on`, `or`, `such`, `that`, `the`, `their`, `then`, `there`, `these`, `they`, `this`, `to`, `was`, `will`, `with`. Our extended list includes 38 additional words (pronouns, auxiliary verbs, etc.) which may affect retrieval results.
+> **Note:** We use the official Lucene/Pyserini stopword list (33 words) for Pyserini compatibility. An extended list (71 words) is also available as `ENGLISH_STOPWORDS` for backwards compatibility.
 
 **Porter Stemming examples:**
 

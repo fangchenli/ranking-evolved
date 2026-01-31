@@ -33,14 +33,13 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 from ranking_evolved.bm25 import (
-    ENGLISH_STOPWORDS,
+    LUCENE_STOPWORDS,
     Corpus,
     LuceneTokenizer,
     PorterStemmer,
     lucene_tokenize,
     tokenize,
 )
-
 
 # =============================================================================
 # EVOLUTION TARGET 1: Parameters
@@ -88,8 +87,8 @@ class EvolvedStopwords:
     """
 
     # ===== EVOLVE THIS SET =====
-    # Start with standard English stopwords
-    words: frozenset[str] = ENGLISH_STOPWORDS
+    # Start with Lucene English stopwords (33 words)
+    words: frozenset[str] = LUCENE_STOPWORDS
 
     # Additional stopwords to add (domain-specific)
     extra_stopwords: frozenset[str] = frozenset()
@@ -427,9 +426,7 @@ class EvolvedQueryWeighting:
             # Weight = term count in query
             term_counts = Counter(query)
             unique_terms = list(term_counts.keys())
-            weights = np.array(
-                [term_counts[t] for t in unique_terms], dtype=np.float64
-            )
+            weights = np.array([term_counts[t] for t in unique_terms], dtype=np.float64)
 
         elif mode == "saturated":
             # Weight = ((k3 + 1) * qtf) / (k3 + qtf)
@@ -638,9 +635,7 @@ class BM25:
             return np.arange(n, dtype=np.int64), np.zeros(n, dtype=np.float64)
 
         # Get query term weights using evolved weighting
-        unique_terms, query_weights = EvolvedQueryWeighting.compute_weights(
-            query, self.k3
-        )
+        unique_terms, query_weights = EvolvedQueryWeighting.compute_weights(query, self.k3)
 
         # Get vocabulary indices for query terms
         vocab = self.corpus.vocabulary
@@ -724,7 +719,7 @@ __all__ = [
     "LuceneTokenizer",
     "lucene_tokenize",
     "PorterStemmer",
-    "ENGLISH_STOPWORDS",
+    "LUCENE_STOPWORDS",
     # Evolved components
     "EvolvedParameters",
     "EvolvedStopwords",
