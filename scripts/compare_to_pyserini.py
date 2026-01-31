@@ -21,7 +21,6 @@ import time
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
 
 import numpy as np
 
@@ -50,7 +49,6 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # Import after setting Java env
 from ranking_evolved.bm25_pyserini import BM25, Corpus, LuceneTokenizer
 from ranking_evolved.metrics import ndcg_at_k, recall_at_k
-
 
 # =============================================================================
 # Benchmark Configurations
@@ -140,7 +138,7 @@ def evaluate_our_implementation_bright(domain: str, implementation: str = "pyser
     doc_tokens = [tokenizer(text) for text in doc_texts]
     
     # Build corpus and BM25
-    print(f"    Building corpus and BM25...")
+    print("    Building corpus and BM25...")
     corpus = Corpus(doc_tokens, ids=doc_ids)
     bm25 = BM25(corpus)
     
@@ -210,7 +208,7 @@ def evaluate_our_implementation_beir(dataset_name: str) -> dict:
     print(f"    Evaluating {total_queries:,} queries against {len(doc_ids):,} documents...")
     sys.stdout.flush()
     
-    for query_idx, (qid, query) in enumerate(zip(dataset.query_ids, dataset.queries), 1):
+    for query_idx, (qid, query) in enumerate(zip(dataset.query_ids, dataset.queries, strict=False), 1):
         # Get relevant docs
         relevant_doc_ids = list(dataset.qrels.get(qid, {}).keys())
         relevant_indices = [id_to_idx[gid] for gid in relevant_doc_ids if gid in id_to_idx]
@@ -289,7 +287,7 @@ def evaluate_our_implementation_trec_dl(dataset_name: str) -> dict:
     recall_scores = []
     recall_k = dataset.metadata.get("recall_k", 1000)
     
-    for qid, query in zip(dataset.query_ids, dataset.queries):
+    for qid, query in zip(dataset.query_ids, dataset.queries, strict=False):
         # Get relevant docs
         relevant_doc_ids = list(dataset.qrels.get(qid, {}).keys())
         relevant_indices = [id_to_idx[gid] for gid in relevant_doc_ids if gid in id_to_idx]
@@ -331,7 +329,7 @@ def load_previous_results(results_path: Path) -> dict:
     if not results_path.exists():
         return {}
     
-    with open(results_path, "r") as f:
+    with open(results_path) as f:
         data = json.load(f)
     
     return data.get("datasets", {})
@@ -343,7 +341,6 @@ def load_previous_results(results_path: Path) -> dict:
 
 def run_bright_comparison(implementation: str = "pyserini"):
     """Run BRIGHT benchmark comparison."""
-    from datasets import load_dataset
     
     print("=" * 70)
     print("BRIGHT BENCHMARK COMPARISON")
@@ -352,7 +349,7 @@ def run_bright_comparison(implementation: str = "pyserini"):
     print("=" * 70)
     print(f"Started: {datetime.now().isoformat()}")
     print(f"Implementation: {impl_name}")
-    print(f"Tokenizer: Lucene (Pyserini's default)")
+    print("Tokenizer: Lucene (Pyserini's default)")
     print()
     
     # Load previous Pyserini results
@@ -361,7 +358,7 @@ def run_bright_comparison(implementation: str = "pyserini"):
     try:
         pyserini_results = {}
         if results_path.exists():
-            with open(results_path, "r") as f:
+            with open(results_path) as f:
                 data = json.load(f)
             for domain, domain_data in data.get("datasets", {}).items():
                 if "pyserini" in domain_data and "ndcg@10" in domain_data["pyserini"]:
@@ -565,7 +562,7 @@ def run_beir_comparison():
         skip_pyserini = dataset_name in BEIR_SKIP_PYSERINI
         
         if skip_pyserini:
-            print(f"  Skipping Pyserini (dataset too large, known to hang)")
+            print("  Skipping Pyserini (dataset too large, known to hang)")
             results["datasets"][dataset_name]["pyserini"] = {
                 "ndcg@10": 0.0,
                 "error": "skipped - dataset too large, known to cause hangs"
@@ -582,7 +579,7 @@ def run_beir_comparison():
             print(f"  Pyserini (cached): {pyserini_score:.2f}%")
         else:
             # For now, skip Pyserini native evaluation (can be added later)
-            print(f"  Skipping Pyserini native (not implemented in unified script)")
+            print("  Skipping Pyserini native (not implemented in unified script)")
             results["datasets"][dataset_name]["pyserini"] = {
                 "ndcg@10": 0.0,
                 "error": "not implemented in unified script - use run_beir_comparison.py"
@@ -590,7 +587,7 @@ def run_beir_comparison():
             pyserini_score = 0
         
         # Our implementation (always run)
-        print(f"  Running our implementation...")
+        print("  Running our implementation...")
         sys.stdout.flush()
         try:
             our_result = evaluate_our_implementation_beir(dataset_name)
@@ -761,12 +758,12 @@ def run_trec_dl_comparison():
             results["datasets"][dataset_name]["pyserini"] = previous_results[dataset_name]["pyserini"]
             pyserini_ndcg = previous_results[dataset_name]["pyserini"]["ndcg@10"]
             pyserini_recall = previous_results[dataset_name]["pyserini"].get("recall@1000", 0)
-            print(f"  Pyserini (cached):")
+            print("  Pyserini (cached):")
             print(f"    nDCG@10: {pyserini_ndcg:.2f}%")
             print(f"    Recall@1000: {pyserini_recall:.2f}%")
         else:
             # For now, skip Pyserini native evaluation (can be added later)
-            print(f"  Skipping Pyserini native (not implemented in unified script)")
+            print("  Skipping Pyserini native (not implemented in unified script)")
             results["datasets"][dataset_name]["pyserini"] = {
                 "ndcg@10": 0.0,
                 "error": "not implemented in unified script - use run_trec_dl_comparison.py"
@@ -775,7 +772,7 @@ def run_trec_dl_comparison():
             pyserini_recall = 0
         
         # Our implementation (always run)
-        print(f"  Running our implementation...")
+        print("  Running our implementation...")
         sys.stdout.flush()
         try:
             our_result = evaluate_our_implementation_trec_dl(dataset_name)

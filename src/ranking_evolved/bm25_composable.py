@@ -575,7 +575,8 @@ class LuceneTokenizer:
 
             warnings.warn(
                 "Pyserini not available. Using fallback tokenizer. "
-                "For exact Pyserini reproduction, install pyserini and Java 21."
+                "For exact Pyserini reproduction, install pyserini and Java 21.",
+                stacklevel=2,
             )
 
     def __call__(self, text: str) -> list[str]:

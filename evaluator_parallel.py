@@ -75,7 +75,7 @@ import random
 import time
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -1513,7 +1513,7 @@ Output includes:
         print(f"Combined Score: {results['combined_score']:.4f}")
         print(f"  avg_nDCG@10:    {results['avg_ndcg@10']:.4f}")
         print(f"  avg_Recall@100: {results['avg_recall@100']:.4f}")
-        print(f"Timing:")
+        print("Timing:")
         print(f"  Index: {results['total_index_time_ms'] / 1000:.1f}s")
         print(f"  Query: {results['total_query_time_ms'] / 1000:.1f}s")
         print(f"  Total: {results['total_time_ms'] / 1000:.1f}s")

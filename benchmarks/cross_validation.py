@@ -26,8 +26,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-from datasets import load_dataset
 
+from datasets import load_dataset
 from ranking_evolved.bm25 import (
     BM25Config,
     BM25Unified,

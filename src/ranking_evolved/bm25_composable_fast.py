@@ -52,7 +52,6 @@ For AlphaEvolve:
 from __future__ import annotations
 
 import math
-import re
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
@@ -60,7 +59,13 @@ from typing import TYPE_CHECKING
 import numpy as np
 from scipy.sparse import csr_matrix, lil_matrix
 
-from ranking_evolved.bm25 import ENGLISH_STOPWORDS, LUCENE_STOPWORDS
+from ranking_evolved.bm25 import (
+    ENGLISH_STOPWORDS,
+    LUCENE_STOPWORDS,
+)
+from ranking_evolved.bm25 import (
+    LuceneTokenizer as _BaseLuceneTokenizer,
+)
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -567,96 +572,56 @@ def score_kernel(
 
 
 # =============================================================================
-# Tokenization - Standalone Implementation (no external dependencies)
+# Tokenization - Uses proper Porter stemmer from bm25.py
 # =============================================================================
-# LUCENE_STOPWORDS and ENGLISH_STOPWORDS are imported from ranking_evolved.bm25
+# LUCENE_STOPWORDS, ENGLISH_STOPWORDS, and LuceneTokenizer imported from ranking_evolved.bm25
 
-_TOKEN_PATTERN = re.compile(r"[a-zA-Z0-9]+")
+# Global tokenizer instance (lazy initialization)
+_TOKENIZER: _BaseLuceneTokenizer | None = None
 
 
-def _porter_stem(word: str) -> str:
-    """Simplified Porter stemmer for common English suffixes."""
-    if len(word) < 3:
-        return word
-
-    # Step 1a: plurals
-    if word.endswith("sses"):
-        word = word[:-2]
-    elif word.endswith("ies"):
-        word = word[:-2]
-    elif word.endswith("ss"):
-        pass
-    elif word.endswith("s"):
-        word = word[:-1]
-
-    # Step 1b: -ed, -ing
-    if word.endswith("eed"):
-        if len(word) > 4:
-            word = word[:-1]
-    elif word.endswith("ed"):
-        stem = word[:-2]
-        if any(c in "aeiou" for c in stem):
-            word = stem
-    elif word.endswith("ing"):
-        stem = word[:-3]
-        if any(c in "aeiou" for c in stem):
-            word = stem
-
-    # Step 2 & 3: common derivational suffixes
-    suffixes = [
-        ("ational", "ate"),
-        ("tional", "tion"),
-        ("ization", "ize"),
-        ("ation", "ate"),
-        ("ator", "ate"),
-        ("iveness", "ive"),
-        ("fulness", "ful"),
-        ("ousness", "ous"),
-        ("icate", "ic"),
-        ("ative", ""),
-        ("alize", "al"),
-        ("ical", "ic"),
-        ("ful", ""),
-        ("ness", ""),
-    ]
-    for suffix, replacement in suffixes:
-        if word.endswith(suffix) and len(word) > len(suffix) + 2:
-            word = word[: -len(suffix)] + replacement
-            break
-
-    return word
+def _get_tokenizer() -> _BaseLuceneTokenizer:
+    """Get or create the shared tokenizer instance."""
+    global _TOKENIZER
+    if _TOKENIZER is None:
+        _TOKENIZER = _BaseLuceneTokenizer()
+    return _TOKENIZER
 
 
 def tokenize(text: str) -> list[str]:
     """
     Tokenize text using Lucene-style processing.
 
+    Uses the proper PorterStemmer from bm25.py that matches Pyserini/Lucene exactly.
+
     Applies:
     - Lowercasing
     - Alphanumeric token extraction
-    - Stopword removal
-    - Porter stemming
+    - Stopword removal (33 Lucene stopwords)
+    - Porter stemming (full algorithm)
     """
-    tokens = _TOKEN_PATTERN.findall(text.lower())
-    tokens = [t for t in tokens if t not in LUCENE_STOPWORDS and len(t) > 1]
-    tokens = [_porter_stem(t) for t in tokens]
-    return [t for t in tokens if t]  # Remove empty strings
+    return _get_tokenizer()(text)
 
 
 class LuceneTokenizer:
     """
-    Lucene-compatible tokenizer (standalone implementation).
+    Lucene-compatible tokenizer.
+
+    Uses the proper PorterStemmer from bm25.py that matches Pyserini/Lucene exactly.
 
     Applies:
     - Tokenization on non-letter boundaries
     - Lowercasing
-    - Porter stemming (simplified)
-    - English stopword removal
+    - Porter stemming (full algorithm matching Lucene)
+    - English stopword removal (33 words)
     """
+
+    def __init__(self):
+        self._tokenizer = _BaseLuceneTokenizer()
 
     def __call__(self, text: str) -> list[str]:
         """Tokenize text."""
-        return tokenize(text)
+        return self._tokenizer(text)
 
 
 # =============================================================================

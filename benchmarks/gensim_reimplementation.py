@@ -16,8 +16,8 @@ from __future__ import annotations
 from collections import Counter
 
 import numpy as np
-from datasets import load_dataset
 
+from datasets import load_dataset
 from ranking_evolved.bm25 import BM25Config, BM25Unified, Corpus, tokenize
 from ranking_evolved.metrics import mean_average_precision, mean_reciprocal_rank, ndcg_at_k
 

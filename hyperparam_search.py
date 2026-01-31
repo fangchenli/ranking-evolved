@@ -16,8 +16,8 @@ import time
 from itertools import product
 
 import numpy as np
-from datasets import load_dataset
 
+from datasets import load_dataset
 from ranking_evolved.bm25 import Corpus, LuceneTokenizer, tokenize
 from ranking_evolved.bm25_evolved import BM25
 from ranking_evolved.metrics import mean_average_precision, mean_reciprocal_rank, ndcg_at_k
@@ -164,7 +164,7 @@ def search_domain(
     print(f"\nBest: tokenizer={best_result['tokenizer']}, k1={best_result['k1']}, b={best_result['b']}")
     print(f"      NDCG@{k}={best_result['ndcg_at_k']:.4f}, MAP={best_result['map']:.4f}, MRR={best_result['mrr']:.4f}")
 
-    print(f"\nTop 10 configurations:")
+    print("\nTop 10 configurations:")
     print(f"{'Tokenizer':<10} {'k1':<6} {'b':<6} {'NDCG@10':<10} {'MAP':<10} {'MRR':<10}")
     print("-" * 60)
     for r in results[:10]:

@@ -23,8 +23,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
-from datasets import load_dataset
 
+from datasets import load_dataset
 from ranking_evolved.bm25 import BM25Config, BM25Unified, Corpus, tokenize
 from ranking_evolved.metrics import (
     mean_average_precision,

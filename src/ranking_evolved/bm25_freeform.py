@@ -450,7 +450,7 @@ class SignalCombiner:
 
         lex = signals.get("lexical", 0.0)
         cov = signals.get("coverage", 0.0)
-        den = signals.get("density", 0.0)
+        _den = signals.get("density", 0.0)  # noqa: F841 - reserved for evolution
         rar = signals.get("rarity", 0.0)
 
         # Example: non-linear interaction
@@ -726,7 +726,8 @@ class LuceneTokenizer:
 
             warnings.warn(
                 "Pyserini not available. Using fallback tokenizer. "
-                "For exact Pyserini reproduction, install pyserini and Java 21."
+                "For exact Pyserini reproduction, install pyserini and Java 21.",
+                stacklevel=2,
             )
 
     def __call__(self, text: str) -> list[str]:
