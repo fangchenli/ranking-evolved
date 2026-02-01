@@ -108,8 +108,8 @@ class EvolvedParameters:
     gamma: float = 0.0  # Coverage bonus weight
     epsilon: float = 1e-9  # Numerical stability
 
-    # Bounds
-    max_idf: float = 10.0  # Cap extreme IDF values
+    # Bounds (set to inf to match other implementations - no clamping by default)
+    max_idf: float = float("inf")  # Cap extreme IDF values (inf = no cap)
     min_idf: float = 0.0  # Floor for IDF
 
 
@@ -810,12 +810,19 @@ class BM25:
         self,
         query_term_ids: list[int],
         candidate_docs: NDArray[np.int64],
+        query_term_weights: NDArray[np.float64] | None = None,
     ) -> NDArray[np.float64]:
         """
         Score candidate documents using vectorized operations.
 
         This is the OPTIMIZED scoring path using numpy/scipy while
         still using the same formula as the evolvable primitives.
+
+        Args:
+            query_term_ids: List of term IDs
+            candidate_docs: Array of candidate document indices
+            query_term_weights: Query term frequency weights (same length as query_term_ids)
+                               If None, all terms have weight 1.0
         """
         if len(candidate_docs) == 0:
             return np.array([], dtype=np.float64)
@@ -830,7 +837,7 @@ class BM25:
         k1 = EvolvedParameters.k1
 
         # Score each query term (vectorized over documents)
-        for term_id in query_term_ids:
+        for i, term_id in enumerate(query_term_ids):
             idf = self.corpus.idf_array[term_id]
             if idf <= 0:
                 continue
@@ -838,14 +845,17 @@ class BM25:
             # Clamp IDF to bounds
             idf = max(EvolvedParameters.min_idf, min(idf, EvolvedParameters.max_idf))
 
+            # Get query term weight (frequency)
+            weight = query_term_weights[i] if query_term_weights is not None else 1.0
+
             # Get TF for all candidates at once
             tf_row = self.corpus.tf_matrix[term_id, candidate_docs].toarray().flatten()
 
             # Vectorized Lucene TF formula - matches saturate_lucene
             tf_saturated = ScoringPrimitives.saturate_lucene_vectorized(tf_row, k1, norms)
 
-            # Add term contribution
-            scores += idf * tf_saturated
+            # Add term contribution with query term frequency weight
+            scores += weight * idf * tf_saturated
 
         return scores
 
@@ -858,24 +868,33 @@ class BM25:
         Rank all documents by relevance - OPTIMIZED.
 
         Uses inverted index to find candidates, then vectorized scoring.
+        Handles query term frequency (qtf) - duplicate terms contribute
+        multiple times, matching Pyserini behavior.
         """
         if not query:
             indices = np.arange(self.corpus.N, dtype=np.int64)
             scores = np.zeros(self.corpus.N, dtype=np.float64)
             return indices, scores
 
-        # Get unique query terms and their IDs
-        unique_terms = list(set(query))
+        # Count query term frequencies (qtf) to match Pyserini behavior
+        term_counts = Counter(query)
+
+        # Get term IDs and their weights
         query_term_ids = []
-        for term in unique_terms:
+        query_term_weights = []
+        for term, count in term_counts.items():
             term_id = self.corpus.get_term_id(term)
             if term_id is not None:
                 query_term_ids.append(term_id)
+                query_term_weights.append(float(count))
 
         if not query_term_ids:
             indices = np.arange(self.corpus.N, dtype=np.int64)
             scores = np.zeros(self.corpus.N, dtype=np.float64)
             return indices, scores
+
+        # Convert weights to numpy array
+        qtf_weights = np.array(query_term_weights, dtype=np.float64)
 
         # OPTIMIZATION: Get candidate documents from inverted index
         candidate_set: set[int] = set()
@@ -885,8 +904,10 @@ class BM25:
 
         candidate_docs = np.array(sorted(candidate_set), dtype=np.int64)
 
-        # OPTIMIZATION: Vectorized scoring
-        candidate_scores = self._score_candidates_vectorized(query_term_ids, candidate_docs)
+        # OPTIMIZATION: Vectorized scoring with query term frequency weights
+        candidate_scores = self._score_candidates_vectorized(
+            query_term_ids, candidate_docs, qtf_weights
+        )
 
         # Build full score array
         all_scores = np.zeros(self.corpus.N, dtype=np.float64)

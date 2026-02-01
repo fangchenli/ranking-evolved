@@ -70,11 +70,6 @@ from ranking_evolved.bm25 import (
 from ranking_evolved.bm25 import (
     LuceneTokenizer as _BaseLuceneTokenizer,
 )
-from ranking_evolved.ranking_utils import (
-    batch_rank_parallel,
-    rank_single_fused,
-    score_candidates_fused,
-)
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -265,9 +260,17 @@ class Signals:
         query_term_ids: list[int],
         candidate_docs: NDArray[np.int64],
         corpus: Corpus,
+        query_term_weights: NDArray[np.float64] | None = None,
     ) -> NDArray[np.float64]:
         """
         Lexical signal computed using vectorized operations - OPTIMIZATION.
+
+        Args:
+            query_term_ids: List of term IDs in the query
+            candidate_docs: Array of candidate document indices
+            corpus: Corpus with tf_matrix, idf_array, norm_array
+            query_term_weights: Query term frequency weights (same length as query_term_ids)
+                               If None, all terms have weight 1.0
         """
         if len(candidate_docs) == 0:
             return np.array([], dtype=np.float64)
@@ -276,14 +279,17 @@ class Signals:
         norms = corpus.norm_array[candidate_docs]
         scores = np.zeros(len(candidate_docs), dtype=np.float64)
 
-        for term_id in query_term_ids:
+        for i, term_id in enumerate(query_term_ids):
             idf = corpus.idf_array[term_id]
             if idf <= 0:
                 continue
 
+            # Get query term weight (frequency)
+            weight = query_term_weights[i] if query_term_weights is not None else 1.0
+
             tf_row = corpus.tf_matrix[term_id, candidate_docs].toarray().flatten()
             tf_saturated = tf_row / (tf_row + k1 * norms + Config.epsilon)
-            scores += idf * tf_saturated
+            scores += weight * idf * tf_saturated
 
         return scores
 
@@ -956,32 +962,24 @@ class BM25:
         self,
         query_term_ids: list[int],
         candidate_docs: NDArray[np.int64],
+        query_term_weights: NDArray[np.float64] | None = None,
     ) -> NDArray[np.float64]:
         """
         Score candidate documents using vectorized operations.
 
         Uses the lexical signal formula in vectorized form.
+
+        Args:
+            query_term_ids: List of term IDs
+            candidate_docs: Array of candidate document indices
+            query_term_weights: Query term frequency weights (same length as query_term_ids)
         """
         if len(candidate_docs) == 0:
             return np.array([], dtype=np.float64)
 
-        # Use vectorized lexical signal
-        return Signals.lexical_signal_vectorized(query_term_ids, candidate_docs, self.corpus)
-
-    def _score_candidates_fused(
-        self,
-        query_term_ids: list[int],
-        candidate_docs: NDArray[np.int64],
-    ) -> NDArray[np.float64]:
-        """Score candidates using fused matrix operation (no term loop)."""
-        return score_candidates_fused(
-            query_term_ids,
-            candidate_docs,
-            self.corpus.tf_matrix,
-            self.corpus.idf_array,
-            self.corpus.norm_array,
-            k1=Config.k1,
-            epsilon=Config.epsilon,
+        # Use vectorized lexical signal with query term weights
+        return Signals.lexical_signal_vectorized(
+            query_term_ids, candidate_docs, self.corpus, query_term_weights
         )
 
     def rank(
@@ -993,24 +991,33 @@ class BM25:
         Rank all documents by relevance - OPTIMIZED.
 
         Uses inverted index to find candidates, then vectorized scoring.
+        Handles query term frequency (qtf) - duplicate terms contribute
+        multiple times to the score, matching Pyserini behavior.
         """
         if not query:
             indices = np.arange(self.corpus.N, dtype=np.int64)
             scores = np.zeros(self.corpus.N, dtype=np.float64)
             return indices, scores
 
-        # Get unique query terms and their IDs
-        unique_terms = list(set(query))
+        # Count query term frequencies (qtf) to match Pyserini behavior
+        term_counts = Counter(query)
+
+        # Get term IDs and their weights
         query_term_ids = []
-        for term in unique_terms:
+        query_term_weights = []
+        for term, count in term_counts.items():
             term_id = self.corpus.get_term_id(term)
             if term_id is not None:
                 query_term_ids.append(term_id)
+                query_term_weights.append(float(count))
 
         if not query_term_ids:
             indices = np.arange(self.corpus.N, dtype=np.int64)
             scores = np.zeros(self.corpus.N, dtype=np.float64)
             return indices, scores
+
+        # Convert weights to numpy array
+        qtf_weights = np.array(query_term_weights, dtype=np.float64)
 
         # OPTIMIZATION: Get candidate documents from inverted index
         candidate_set: set[int] = set()
@@ -1020,8 +1027,10 @@ class BM25:
 
         candidate_docs = np.array(sorted(candidate_set), dtype=np.int64)
 
-        # OPTIMIZATION: Vectorized scoring
-        candidate_scores = self._score_candidates_vectorized(query_term_ids, candidate_docs)
+        # OPTIMIZATION: Vectorized scoring with query term frequency weights
+        candidate_scores = self._score_candidates_vectorized(
+            query_term_ids, candidate_docs, qtf_weights
+        )
 
         # Build full score array
         all_scores = np.zeros(self.corpus.N, dtype=np.float64)
@@ -1053,44 +1062,6 @@ class BM25:
             results = list(executor.map(rank_single, queries))
 
         return results
-
-    def _rank_single_fused(
-        self,
-        query: list[str],
-        top_k: int | None = None,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Rank using fused matrix operations for a single query."""
-        return rank_single_fused(
-            query,
-            self.corpus,
-            k1=Config.k1,
-            epsilon=Config.epsilon,
-            top_k=top_k,
-        )
-
-    def batch_rank_vectorized(
-        self,
-        queries: list[list[str]],
-        top_k: int | None = None,
-    ) -> list[tuple[np.ndarray, np.ndarray]]:
-        """
-        Batch rank using fused matrix operations + parallel processing.
-
-        Uses shared utilities from ranking_utils.py for:
-        1. Fused query term computation (no loop over terms)
-        2. np.argpartition for efficient top-k selection
-        3. Inverted index for candidate filtering
-        4. Parallel processing across queries
-        """
-        return batch_rank_parallel(
-            queries,
-            self.corpus,
-            k1=Config.k1,
-            epsilon=Config.epsilon,
-            top_k=top_k,
-            num_workers=NUM_QUERY_WORKERS,
-            min_queries_for_parallel=MIN_QUERIES_FOR_PARALLEL,
-        )
 
 
 # =============================================================================
