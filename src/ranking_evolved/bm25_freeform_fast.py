@@ -70,6 +70,11 @@ from ranking_evolved.bm25 import (
 from ranking_evolved.bm25 import (
     LuceneTokenizer as _BaseLuceneTokenizer,
 )
+from ranking_evolved.ranking_utils import (
+    batch_rank_parallel,
+    rank_single_fused,
+    score_candidates_fused,
+)
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -963,6 +968,22 @@ class BM25:
         # Use vectorized lexical signal
         return Signals.lexical_signal_vectorized(query_term_ids, candidate_docs, self.corpus)
 
+    def _score_candidates_fused(
+        self,
+        query_term_ids: list[int],
+        candidate_docs: NDArray[np.int64],
+    ) -> NDArray[np.float64]:
+        """Score candidates using fused matrix operation (no term loop)."""
+        return score_candidates_fused(
+            query_term_ids,
+            candidate_docs,
+            self.corpus.tf_matrix,
+            self.corpus.idf_array,
+            self.corpus.norm_array,
+            k1=Config.k1,
+            epsilon=Config.epsilon,
+        )
+
     def rank(
         self,
         query: list[str],
@@ -1032,6 +1053,44 @@ class BM25:
             results = list(executor.map(rank_single, queries))
 
         return results
+
+    def _rank_single_fused(
+        self,
+        query: list[str],
+        top_k: int | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Rank using fused matrix operations for a single query."""
+        return rank_single_fused(
+            query,
+            self.corpus,
+            k1=Config.k1,
+            epsilon=Config.epsilon,
+            top_k=top_k,
+        )
+
+    def batch_rank_vectorized(
+        self,
+        queries: list[list[str]],
+        top_k: int | None = None,
+    ) -> list[tuple[np.ndarray, np.ndarray]]:
+        """
+        Batch rank using fused matrix operations + parallel processing.
+
+        Uses shared utilities from ranking_utils.py for:
+        1. Fused query term computation (no loop over terms)
+        2. np.argpartition for efficient top-k selection
+        3. Inverted index for candidate filtering
+        4. Parallel processing across queries
+        """
+        return batch_rank_parallel(
+            queries,
+            self.corpus,
+            k1=Config.k1,
+            epsilon=Config.epsilon,
+            top_k=top_k,
+            num_workers=NUM_QUERY_WORKERS,
+            min_queries_for_parallel=MIN_QUERIES_FOR_PARALLEL,
+        )
 
 
 # =============================================================================
