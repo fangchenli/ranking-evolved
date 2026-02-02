@@ -12,7 +12,7 @@
 #   export EVAL_EXCLUDE_DATASETS="dl19,dl20,..."
 #   uv run python -m openevolve.cli src/ranking_evolved/bm25_constrained_fast.py evaluator_parallel.py --config openevolve_config_constrained.yaml --output openevolve_output_constrained
 
-max_iterations: 10
+max_iterations: 70
 checkpoint_interval: 5
 log_level: "DEBUG"
 random_seed: 42

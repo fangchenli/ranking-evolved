@@ -18,7 +18,7 @@
 #
 # Output: evolution_trace.jsonl (prompts + LLM responses when include_prompts: true), checkpoints/checkpoint_<N>/, best/
 
-max_iterations: 10  # More iterations for larger search space
+max_iterations: 70  # Run 70 steps, then resume later if needed
 checkpoint_interval: 5
 log_level: "DEBUG"
 random_seed: 42
