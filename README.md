@@ -54,7 +54,7 @@ Tokenization converts raw text into a list of normalized terms. This is the firs
 
 ### LuceneTokenizer Pipeline
 
-The `LuceneTokenizer` replicates Pyserini/Anserini's tokenization in pure Python (no Java required):
+The `LuceneTokenizer` replicates Pyserini/Anserini's tokenization in pure Python (no Java required). The OpenEvolve seed programs (`bm25_constrained_fast.py`, `bm25_composable_fast.py`, `bm25_freeform_fast.py`) use an inlined Lucene DefaultEnglishAnalyzer-equivalent tokenizer (same behavior, no imports from `bm25.py`) so evolution runs stay self-contained and aligned with Pyserini.
 
 ```python
 from ranking_evolved.bm25 import LuceneTokenizer
@@ -470,24 +470,38 @@ uv run python -m benchmarks.full_bright_evaluation --pyserini --query-mode satur
 ```
 ranking-evolved/
 ├── src/ranking_evolved/
-│   ├── bm25.py          # BM25 implementation (tokenizers, IDF/TF strategies, scorers)
-│   ├── bm25_classic.py  # Vanilla Robertson BM25 for OpenEvolve (k1=1.5, b=0.75)
-│   ├── bm25_evolved.py  # Evolved BM25 with discovered optimizations
-│   └── metrics.py       # Evaluation metrics (NDCG, MAP, MRR, precision, recall)
+│   ├── bm25.py                   # BM25 implementation (tokenizers, IDF/TF strategies, scorers)
+│   ├── bm25_classic.py           # Vanilla Robertson BM25 for OpenEvolve (k1=1.5, b=0.75)
+│   ├── bm25_evolved.py           # Evolved BM25 with discovered optimizations
+│   ├── bm25_constrained_fast.py  # OpenEvolve seed: constrained search, inlined Lucene tokenizer
+│   ├── bm25_composable_fast.py   # OpenEvolve seed: composable building blocks, inlined Lucene tokenizer
+│   ├── bm25_freeform_fast.py     # OpenEvolve seed: freeform edits, inlined Lucene tokenizer
+│   └── metrics.py                # Evaluation metrics (NDCG, MAP, MRR, precision, recall)
 ├── benchmarks/
-│   ├── full_bright_evaluation.py  # Full 12-domain evaluation
-│   ├── bright_benchmark.py        # Comprehensive benchmark runner
-│   └── baselines/                 # External library wrappers (Pyserini, Gensim)
+│   ├── full_bright_evaluation.py # Full 12-domain evaluation
+│   ├── bright_benchmark.py       # Comprehensive benchmark runner
+│   └── baselines/                # External library wrappers (Pyserini, Gensim)
 ├── tests/
-│   ├── test_bm25.py               # BM25 unit tests
-│   └── test_lucene_tokenizer.py   # Tokenizer tests (88 test cases)
+│   ├── test_bm25.py              # BM25 unit tests
+│   ├── test_lucene_tokenizer.py  # Tokenizer tests (88 test cases)
+│   └── test_metrics.py           # Metric tests (precision@k, recall@k, AP, NDCG@k)
+├── results/baselines/            # Baseline run outputs (from run_baselines.sh)
 ├── references/
-│   ├── bm25_formulas.md           # BM25 variant formulas
-│   └── evolved_variants.md        # Archive of evolved formulas
-├── evaluator.py                   # Unified multi-benchmark evaluator (recommended)
-├── evaluator_bright.py            # BRIGHT benchmark evaluator
-├── evaluator_beir.py              # BEIR benchmark evaluator
-└── openevolve_config.yaml         # OpenEvolve configuration
+│   ├── bm25_formulas.md          # BM25 variant formulas
+│   └── evolved_variants.md       # Archive of evolved formulas
+├── evaluator_parallel.py         # Parallel multi-benchmark evaluator (used by OpenEvolve)
+├── evaluator.py                  # Unified multi-benchmark evaluator
+├── evaluator_bright.py           # BRIGHT benchmark evaluator
+├── evaluator_beir.py             # BEIR benchmark evaluator
+├── run_baselines.sh              # Run all baselines; writes to results/baselines/ (overwrites)
+├── openevolve_config_constrained_fast.yaml  # OpenEvolve: constrained fast seed
+├── openevolve_config_composable.yaml       # OpenEvolve: composable fast seed
+├── openevolve_config_freeform.yaml         # OpenEvolve: freeform fast seed
+├── openevolve_config.yaml        # OpenEvolve: classic seed
+├── commands.txt                  # Env vars + OpenEvolve run commands
+└── docs/
+    ├── OPENEVOLVE_RUN_GUIDE.md   # Where to find prompts, outputs, database
+    └── GCP_MACHINE_RECOMMENDATIONS.md
 ```
 
 ---
@@ -537,6 +551,7 @@ uv run python evaluator.py src/ranking_evolved/bm25_classic.py \
 ```bash
 EVAL_BRIGHT_DOMAINS=biology,earth_science
 EVAL_BEIR_DATASETS=scifact,nfcorpus
+EVAL_EXCLUDE_DATASETS=dl19,dl20,fever,...   # Exclude datasets for fast runs (see commands.txt)
 EVAL_SAMPLE_QUERIES=20
 EVAL_TOKENIZER=lucene
 ```
@@ -602,6 +617,16 @@ uv run python evaluator_beir.py src/ranking_evolved/bm25.py \
 
 **Available BEIR datasets:** `scifact`, `nfcorpus`, `arguana`, `scidocs`, `fiqa`, `webis-touche2020`, `trec-covid`, `quora`, `cqadupstack`, `robust04`, `trec-news`, `hotpotqa`, `nq`, `fever`, `climate-fever`, `dbpedia-entity`, `bioasq`
 
+### Running baselines (Pyserini, composable, constrained, freeform)
+
+To compare all baseline implementations and save metrics to `results/baselines/`:
+
+```bash
+./run_baselines.sh
+```
+
+This overwrites existing JSON files in `results/baselines/`. Outputs include `bm25_pyserini.json`, `bm25_composable_fast.json`, `bm25_constrained_fast.json`, `bm25_freeform_fast.json`, and `official_pyserini.json`. For fast iteration you can set `EVAL_EXCLUDE_DATASETS` (see `commands.txt`) before running the evaluator manually.
+
 ### BEIR Benchmark Results
 
 Comparison of our BM25 implementations vs the [BEIR paper](https://arxiv.org/abs/2104.08663) baseline (nDCG@10):
@@ -625,21 +650,42 @@ The Robertson Classic parameters (higher k1, higher b) outperform Anserini defau
 
 ## Running OpenEvolve
 
-The evolved TF formula was discovered using [OpenEvolve](https://github.com/algorithmicsuperintelligence/openevolve):
+Evolution runs use **`uv run python -m openevolve.cli`** (the `openevolve-run` entry point can fail with "No such file or directory" in some environments). The evolved TF formula was discovered using [OpenEvolve](https://github.com/algorithmicsuperintelligence/openevolve).
+
+### Fast evaluation (recommended)
+
+Set `EVAL_EXCLUDE_DATASETS` so each candidate is evaluated only on the small dataset set (~12 datasets, ~5–15 min per candidate). See `commands.txt` for the full export line.
 
 ```bash
+export EVAL_EXCLUDE_DATASETS="dl19,dl20,fever,climate-fever,hotpotqa,dbpedia-entity,nq,quora,webis-touche2020,cqadupstack,leetcode,aops,theoremqa_questions,robotics,psychology,sustainable_living"
 export OPENAI_API_KEY="your-key"
 
-# Evaluate on multiple benchmarks (recommended)
-EVAL_BRIGHT_DOMAINS=biology,earth_science \
-EVAL_BEIR_DATASETS=scifact,nfcorpus \
-EVAL_SAMPLE_QUERIES=20 \
-uv run openevolve-run src/ranking_evolved/bm25_classic.py evaluator.py --config openevolve_config.yaml
+# Constrained fast (focused search space)
+uv run python -m openevolve.cli src/ranking_evolved/bm25_constrained_fast.py evaluator_parallel.py \
+  --config openevolve_config_constrained_fast.yaml --output openevolve_output_constrained_fast
 
-# Or single benchmark
-uv run openevolve-run src/ranking_evolved/bm25_classic.py evaluator_bright.py --config openevolve_config.yaml
-uv run openevolve-run src/ranking_evolved/bm25_classic.py evaluator_beir.py --config openevolve_config.yaml
+# Composable fast (building-block combinations)
+uv run python -m openevolve.cli src/ranking_evolved/bm25_composable_fast.py evaluator_parallel.py \
+  --config openevolve_config_composable.yaml --output openevolve_output_composable_fast
+
+# Freeform fast (maximum freedom)
+uv run python -m openevolve.cli src/ranking_evolved/bm25_freeform_fast.py evaluator_parallel.py \
+  --config openevolve_config_freeform.yaml --output openevolve_output_freeform_fast
 ```
+
+### Other evaluators
+
+```bash
+# Multiple benchmarks (classic seed)
+EVAL_BRIGHT_DOMAINS=biology,earth_science EVAL_BEIR_DATASETS=scifact,nfcorpus EVAL_SAMPLE_QUERIES=20 \
+uv run python -m openevolve.cli src/ranking_evolved/bm25_classic.py evaluator.py --config openevolve_config.yaml
+
+# Single benchmark
+uv run python -m openevolve.cli src/ranking_evolved/bm25_classic.py evaluator_bright.py --config openevolve_config.yaml
+uv run python -m openevolve.cli src/ranking_evolved/bm25_classic.py evaluator_beir.py --config openevolve_config.yaml
+```
+
+Prompts, LLM responses, and the evolution database are written to the output directory; see [docs/OPENEVOLVE_RUN_GUIDE.md](docs/OPENEVOLVE_RUN_GUIDE.md) for details.
 
 ---
 

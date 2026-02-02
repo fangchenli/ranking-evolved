@@ -4,6 +4,19 @@ export EVAL_EXCLUDE_DATASETS="dl19,dl20,fever,climate-fever,hotpotqa,dbpedia-ent
 # Set your API key
 export OPENAI_API_KEY="your-key"
 
-# Run OpenEvolve with your preferred seed program
-uv run openevolve-run src/ranking_evolved/bm25_freeform_fast.py evaluator_parallel.py --config openevolve_config_freeform.yaml
+# Run OpenEvolve with your preferred seed program (set EVAL_EXCLUDE_DATASETS above first):
+# Use: uv run python -m openevolve.cli <program> <evaluator> --config <config> --output <dir>
 
+# Constrained fast
+uv run python -m openevolve.cli src/ranking_evolved/bm25_constrained_fast.py evaluator_parallel.py --config openevolve_config_constrained.yaml --output output/openevolve_output_constrained_fast/$(date +%Y%m%d_%H%M%S)
+
+# Composable fast
+uv run python -m openevolve.cli src/ranking_evolved/bm25_composable_fast.py evaluator_parallel.py --config openevolve_config_composable.yaml --output output/openevolve_output_composable_fast/$(date +%Y%m%d_%H%M%S)
+
+# Freeform fast
+uv run python -m openevolve.cli src/ranking_evolved/bm25_freeform_fast.py evaluator_parallel.py --config openevolve_config_freeform.yaml --output output/openevolve_output_freeform_fast/$(date +%Y%m%d_%H%M%S)
+
+# Resume from existing output (continue evolution from a checkpoint)
+# Use --checkpoint <path-to-checkpoint-dir> and --output <same-run-dir> (so new checkpoints go to the same run).
+# Example: continue from checkpoint_10 in a previous constrained run
+# uv run python -m openevolve.cli src/ranking_evolved/bm25_constrained_fast.py evaluator_parallel.py --config openevolve_config_constrained.yaml --output output/openevolve_output_constrained_fast/20260201_184826 --checkpoint output/openevolve_output_constrained_fast/20260201_184826/checkpoints/checkpoint_10

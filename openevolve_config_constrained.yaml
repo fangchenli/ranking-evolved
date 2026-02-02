@@ -1,36 +1,27 @@
-# OpenEvolve configuration for Constrained BM25 Seed Program
+# OpenEvolve configuration for Constrained BM25 Seed
 #
-# Seed Program: src/ranking_evolved/bm25_constrained.py (~527 lines)
+# Seed: src/ranking_evolved/bm25_constrained_fast.py (concise: Parameters + idf, tf_saturated, length_norm, query_weights)
 #
-# GOAL: Evolve within the classic BM25 paradigm with constrained search space
-# - Optimize the standard BM25 formula (IDF × TF, summed over terms)
-# - Find optimal parameters for the target domain
-# - Discover improved IDF/TF formulations
-# - Keep the fundamental BM25 structure intact
+# GOAL: Safe search over known BM25 primitives — no exploration of novel retrieval ideas.
+# - Tune hyperparameters (k1, b, k3)
+# - Swap IDF / TF saturation / length norm / query weighting for known alternatives
+# - Meaningful combination of known primitives; efficient grid-search over a known search space
+# - Stay with BM25; keep interface (BM25, Corpus, tokenize, LuceneTokenizer, rank, score)
 #
-# This is the CONSTRAINED approach - smallest search space, fastest convergence.
-# Matches Lucene/Pyserini defaults for easy comparison with baselines.
-#
-# Run with:
-#   export OPENAI_API_KEY="your-key"
-#   uv run openevolve-run src/ranking_evolved/bm25_constrained.py evaluator_parallel.py --config openevolve_config_constrained.yaml
-#
-# Environment variables for evaluation:
-#   EVAL_BENCHMARKS=all          # all | bright | beir | bright+beir
-#   EVAL_SAMPLE_QUERIES=20       # Sample N queries per dataset (0 = all)
-#   EVAL_TOKENIZER=lucene        # simple or lucene
-#   EVAL_MAX_WORKERS=0           # 0 = auto (based on cores/memory)
-#   EVAL_THREADS_PER_WORKER=8    # Threads for tokenization
+# Run (align with commands.txt):
+#   export EVAL_EXCLUDE_DATASETS="dl19,dl20,..."
+#   uv run python -m openevolve.cli src/ranking_evolved/bm25_constrained_fast.py evaluator_parallel.py --config openevolve_config_constrained.yaml --output openevolve_output_constrained
 
-max_iterations: 200
-log_level: "INFO"
+max_iterations: 10
+checkpoint_interval: 5
+log_level: "DEBUG"
 random_seed: 42
 diff_based_evolution: true
-max_code_length: 20000  # bm25_constrained.py is ~527 lines (~17k chars)
+max_code_length: 30000
 
 llm:
   models:
-    - name: "gpt-4o"
+    - name: "gpt-5.2"
       weight: 1.0
   api_base: "https://api.openai.com/v1"
   api_key: null  # falls back to OPENAI_API_KEY env var
@@ -43,103 +34,45 @@ llm:
 
 prompt:
   system_message: |
-    You are evolving a CONSTRAINED BM25 ranking function evaluated on IR benchmarks.
-    
-    ## Evaluation Metrics
-    You receive detailed metrics for each dataset:
-    - nDCG@10: Normalized Discounted Cumulative Gain (ranking quality)
-    - Recall@100: Coverage metric (retrieval completeness)
-    - index_time_ms: Time to tokenize corpus and build index
-    - query_time_ms: Time to evaluate all queries
-    
-    Aggregate metrics:
-    - avg_ndcg@10: Macro-average across all datasets
-    - avg_recall@100: Macro-average across all datasets
-    - combined_score: (avg_ndcg@10 + avg_recall@100) / 2
-    
-    Use per-dataset metrics to identify weak spots and optimize accordingly.
-    
-    ## Philosophy
-    You are working within the constrained BM25 paradigm. The goal is to optimize
-    the standard BM25 formula while keeping its fundamental structure:
-    
-        Score(D, Q) = Σ IDF(t) × TF(t, D)
-    
-    Do NOT try to fundamentally restructure the algorithm. Instead, focus on:
-    - Finding optimal parameter values
-    - Improving the IDF and TF formulas
-    - Better length normalization
-    - Query term weighting strategies
-    
-    ## Evolution Targets (in bm25_constrained.py)
-    
-    1. `Parameters` - Numeric constants (Lucene defaults)
-       - k1: TF saturation (default: 0.9, try 0.5-2.0)
-       - b: Length normalization (default: 0.4, try 0.3-0.9)
-    
-    2. `IDFFormula.compute()` - IDF formula
-       - Default: log(1 + (N - df + 0.5) / (df + 0.5))  [Lucene IDF]
-       - Always non-negative (unlike classic BM25)
-       - Can try: ATIRE IDF, Robertson IDF
-    
-    3. `TFFormula.compute()` - TF saturation formula
-       - Default: tf / (tf + k1 * norm)  [Lucene formula, no (k1+1)]
-       - Consider: log damping, BM25L, BM25+, double saturation
-    
-    4. `LengthNorm.compute()` - Document length normalization
-       - Default: 1 - b + b * (dl / avgdl)
-       - Consider: log-based, pivot normalization, sigmoid
-    
-    5. `QueryWeighting.compute_weights()` - Query term handling
-       - Mode: "unique" (default), "sum_all", "saturated"
-       - Default uses "unique" - each term contributes once
-    
-    6. `ScoreAggregation.aggregate()` - How to combine term scores
-       - Mode: "sum" (default), "weighted_sum", "max", "mean"
-       - Default uses simple sum
-    
-    7. `BM25.score_kernel()` - The main scoring function
-       - Combines IDF, TF, and aggregation
-       - Primary evolution target for formula changes
-    
-    ## Lucene BM25 Formula Reference (default)
-    
-    IDF(t) = log(1 + (N - df(t) + 0.5) / (df(t) + 0.5))
-    
-    TF(t, D) = f(t,D) / (f(t,D) + k1 × norm)
-    
-    norm = 1 - b + b × |D| / avgdl
-    
-    Score = Σ IDF(t) × TF(t, D)  for each query term t
-    
+    You are evolving a **constrained BM25** ranking function. We want **safe updates** only: tune hyperparameters, swap in known IDF/TF/length-norm/query-weight formulas, and combine these primitives meaningfully. Do **not** explore novel retrieval ideas — stick to BM25 and efficiently search the known space.
+
+    ## What you optimize
+
+    - **combined_score** = 0.8 × avg_recall@100 + 0.2 × avg_ndcg@10 (higher is better).
+    - Per-dataset: nDCG@10, Recall@100, index_time_ms, query_time_ms. Use these to target weak datasets.
+
+    ## What you can change (evolve)
+
+    1. **Parameters** (k1, b, k3) — Tune within reasonable ranges: e.g. k1 in [0.5, 2.0], b in [0, 1], k3 in [0, 20].
+    2. **idf(df, N)** — Swap for known formulas: Lucene (default), Robertson `log((N-df+0.5)/(df+0.5))`, ATIRE `log(N/df)`, BM25L `log((N+1)/(df+0.5))`, BM25+ `log((N+1)/df)`.
+    3. **tf_saturated(tf, k1, norm)** — Swap for known formulas: Lucene `tf/(tf+k1*norm)` (default), Robertson `(k1+1)*tf/(tf+k1*norm)`, log-damped `log(1+tf)/(tf+k1*norm)`.
+    4. **length_norm(doc_lengths, avgdl, b)** — Swap for known: pivoted `1-b+b*dl/avgdl` (default), none `1.0`, or other standard variants.
+    5. **query_weights(query, k3, mode)** — Change mode or formula: "unique" (1 per term), "count" (qtf, default), "saturated" `(k3+1)*qtf/(k3+qtf)`.
+
+    Use **SEARCH/REPLACE** diffs: SEARCH must exactly match the current code; REPLACE is your edit. Prefer **one component per edit** (e.g. only change k1/b, or only swap IDF formula).
+
+    ## What you must keep
+
+    - **Interface**: BM25, Corpus, tokenize, LuceneTokenizer; BM25.rank(query, top_k), BM25.score(query, doc_idx). Do not remove or rename these.
+    - **BM25 structure**: Score = sum over query terms of (weight × IDF × saturated_TF). No new retrieval model.
+    - **Numerical stability**: Avoid division by zero and NaNs (use a small epsilon where needed).
+
     ## Guidelines
-    - Keep changes targeted to one component at a time
-    - Preserve the BM25 interface (Corpus, rank, score signatures)
-    - No new dependencies - only numpy and re are available
-    - Ensure numerical stability (add epsilon to denominators)
-    - Look for sections marked "EVOLUTION TARGET"
-    - Consider both ranking quality (nDCG) AND efficiency (index/query time)
-    
-    ## Promising Directions
-    - Try log-damped TF: log(1 + tf_saturated)
-    - Add small delta bonus for matching terms (BM25+)
-    - Adjust parameters based on dataset characteristics
-    - Higher k1 for verbose documents, lower for short
+
+    - Prefer small, targeted changes (e.g. one hyperparameter or one formula swap).
+    - Use known alternatives from the IR literature; do not invent new formulas.
+    - This is effectively an efficient grid-search over a known search space — stay within it.
 
   evaluator_system_message: |
-    You review candidate BM25 ranking code evaluated on multiple IR datasets.
-    
-    Check for:
-    - Numerical stability (no division by zero, no NaN)
-    - Interface compatibility (Corpus, rank, score methods work)
-    - Meaningful ranking behavior (not all zeros or identical scores)
-    - Preservation of BM25 structure (IDF × TF pattern)
-    - Compatibility with Lucene-style defaults
-    
-    The LLM receives per-dataset metrics. Look for:
-    - Datasets where nDCG improved/degraded significantly
-    - Balance between ranking quality and speed
-    - Generalization across different benchmark types
+    You review candidate constrained BM25 code evaluated on IR benchmarks.
+
+    Check:
+    - Code runs without errors; scores are valid (no NaN, not all zeros).
+    - **Interface**: BM25, Corpus, tokenize, LuceneTokenizer present; BM25 has rank() and score().
+    - **BM25 structure**: IDF × TF (or known variant); no novel retrieval model.
+    - Numerical stability (no division by zero).
+
+    Reject changes that introduce new retrieval ideas or break the BM25 interface. Approve safe updates: hyperparameter tweaks and swaps among known IDF/TF/length-norm/query-weight formulas.
 
   num_top_programs: 3
   num_diverse_programs: 2
@@ -160,7 +93,7 @@ database:
   log_prompts: true
 
 evaluator:
-  timeout: 3600  # 1 hour - multiple datasets can take time even with parallelism
+  timeout: 1800  # 30 minutes - fast datasets only
   max_retries: 2
   cascade_evaluation: false
   parallel_evaluations: 1  # Evaluator handles parallelism internally
@@ -169,4 +102,4 @@ evolution_trace:
   enabled: true
   format: "jsonl"
   include_code: true
-  include_prompts: false
+  include_prompts: true   # Include prompts and LLM responses in evolution_trace.jsonl

@@ -27,7 +27,7 @@ Memory-Aware Scheduling:
 Output Format (for OpenEvolve):
 ===============================
 {
-    "combined_score": float,  # Primary optimization target
+    "combined_score": float,  # 0.8 * avg_recall@100 + 0.2 * avg_ndcg@10 (primary optimization target)
     "avg_ndcg@10": float,
     "avg_recall@100": float,
     "total_index_time_ms": float,
@@ -1017,32 +1017,10 @@ def _evaluate_queries_on_index(
     )
 
 
-def _worker_evaluate(args: tuple) -> DatasetResult | list[DatasetResult]:
-    """Worker function for ProcessPoolExecutor."""
-    program_path, benchmark, dataset_name, config_dict = args
-    
-    # Reconstruct config in worker process
-    config = EvalConfig(
-        sample_queries=config_dict.get("sample_queries"),
-        seed=config_dict.get("seed", 42),
-        tokenizer=config_dict.get("tokenizer", "lucene"),
-        threads_per_worker=config_dict.get("threads_per_worker", 8),
-        beir_data_dir=config_dict.get("beir_data_dir", "datasets/beir"),
-        trec_dl_data_dir=config_dict.get("trec_dl_data_dir", "datasets/trec_dl"),
-    )
-    
-    # Special case: combined TREC DL evaluation (index once for DL19 + DL20)
-    if benchmark == "trec_dl_combined":
-        if program_path == "pyserini":
-            # For Pyserini, still use combined approach
-            return evaluate_pyserini_trec_dl_combined(config)
-        return evaluate_trec_dl_combined(program_path, config)
-    
-    # Special case: use official Pyserini baseline
-    if program_path == "pyserini":
-        return evaluate_pyserini_official(benchmark, dataset_name, config)
-    
-    return evaluate_single_dataset(program_path, benchmark, dataset_name, config)
+# Import worker from a stable module name so ProcessPoolExecutor workers can unpickle
+# when OpenEvolve loads this file as "evaluation_module" (child processes would otherwise
+# fail with ModuleNotFoundError: No module named 'evaluation_module').
+from evaluator_parallel_worker import _worker_evaluate
 
 
 # =============================================================================
@@ -1308,13 +1286,11 @@ def aggregate_results(results: list[DatasetResult]) -> dict[str, Any]:
     for result in results:
         prefix = result.name
         
-        # Per-dataset metrics
+        # Per-dataset metrics (no num_docs/num_queries to keep trace/checkpoints smaller)
         output[f"{prefix}_ndcg@10"] = result.ndcg_at_10
         output[f"{prefix}_recall@100"] = result.recall_at_100
         output[f"{prefix}_index_time_ms"] = result.index_time_ms
         output[f"{prefix}_query_time_ms"] = result.query_time_ms
-        output[f"{prefix}_num_docs"] = result.num_docs
-        output[f"{prefix}_num_queries"] = result.num_queries
         
         if result.error:
             output[f"{prefix}_error"] = result.error
@@ -1332,7 +1308,8 @@ def aggregate_results(results: list[DatasetResult]) -> dict[str, Any]:
     
     output["avg_ndcg@10"] = avg_ndcg
     output["avg_recall@100"] = avg_recall
-    output["combined_score"] = (avg_ndcg + avg_recall) / 2.0
+    # Zero score if any dataset failed (avoids reward hacking from partial/crashed runs)
+    output["combined_score"] = 0.0 if datasets_failed > 0 else (0.8 * avg_recall + 0.2 * avg_ndcg)
     
     # Timing
     output["total_index_time_ms"] = total_index_time

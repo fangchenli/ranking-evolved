@@ -1,56 +1,9 @@
 """
-Freeform Ranking Seed Program - Maximum Structural Freedom for AlphaEvolve (OPTIMIZED).
+Freeform lexical retrieval seed — maximum freedom for discovering a new retrieval method.
 
-This seed program gives AlphaEvolve maximum freedom to explore novel ranking
-approaches beyond traditional BM25, with OPTIMIZED data structures for fast evaluation.
-
-=============================================================================
-OPTIMIZATIONS (vs bm25_freeform.py):
-=============================================================================
-
-1. Inverted Index - Only score documents containing query terms
-2. Sparse Matrix - scipy CSR matrix for vectorized TF lookups
-3. Pre-computed IDF Array - numpy array instead of dict lookups
-4. Pre-computed Length Norm Array - vectorized normalization
-5. Vectorized Scoring - batch operations over candidate documents
-6. Parallel Query Processing - ThreadPoolExecutor for batch queries
-
-Performance: 10-100x faster than naive implementation on large corpora.
-
-=============================================================================
-DESIGN PHILOSOPHY:
-=============================================================================
-
-This is a flexible framework where:
-- Multiple scoring signals can be computed
-- Signals can be combined in arbitrary ways
-- New signals can be added
-- The entire scoring strategy can be restructured
-- Even the representation of documents/queries can be evolved
-
-The goal is to see if AlphaEvolve can discover something fundamentally different
-from BM25 that works better for the target domain.
-
-=============================================================================
-EVOLUTION TARGETS (almost everything!):
-=============================================================================
-
-1. GLOBAL CONFIG (Config) - All parameters and settings
-2. FEATURE EXTRACTORS (FeatureExtractors) - Extract signals from query/doc pairs
-3. SIGNAL DEFINITIONS (Signals) - Define what signals to compute
-4. SIGNAL COMBINER (SignalCombiner) - How to combine signals
-5. DOCUMENT REPRESENTATION (DocumentRepr) - How to represent documents
-6. QUERY REPRESENTATION (QueryRepr) - How to represent queries
-7. SCORING ENGINE (ScoringEngine) - The main scoring logic
-8. MAIN KERNEL (score_document) - Entry point for scoring
-
-=============================================================================
-
-Run evaluation with:
-    uv run python evaluator_parallel.py src/ranking_evolved/bm25_freeform_fast.py
-
-For AlphaEvolve:
-    uv run openevolve-run src/ranking_evolved/bm25_freeform_fast.py evaluator_parallel.py --config openevolve_config_freeform.yaml
+Core idea: document representation + query representation + scoring method.
+The evaluator requires: BM25, Corpus, tokenize, LuceneTokenizer; BM25 must have rank() and score().
+Everything else is evolvable. Default behavior: Lucene BM25 (same as current seed).
 """
 
 from __future__ import annotations
@@ -66,809 +19,182 @@ from scipy.sparse import csr_matrix, lil_matrix
 from ranking_evolved.bm25 import (
     ENGLISH_STOPWORDS,
     LUCENE_STOPWORDS,
-)
-from ranking_evolved.bm25 import (
     LuceneTokenizer as _BaseLuceneTokenizer,
 )
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
-
-# =============================================================================
-# Configuration
-# =============================================================================
-
-# Number of workers for parallel query processing
 NUM_QUERY_WORKERS = 32
 MIN_QUERIES_FOR_PARALLEL = 10
 
 
-# =============================================================================
-# EVOLUTION TARGET 1: Global Configuration
-# =============================================================================
-
+# -----------------------------------------------------------------------------
+# Config — EVOLVE: add parameters for your retrieval method
+# -----------------------------------------------------------------------------
 
 class Config:
-    """
-    Global configuration - EVOLUTION TARGET.
-
-    Contains ALL tunable parameters. AlphaEvolve can add new parameters,
-    remove unused ones, or completely restructure the configuration.
-    """
-
-    # ===== EVOLVE THESE VALUES =====
-
-    # Traditional BM25 parameters (may or may not be used)
-    # Defaults match Pyserini/Lucene for equivalence
-    k1: float = 0.9  # TF saturation (Pyserini default)
-    b: float = 0.4  # Length normalization (Pyserini default)
-    k3: float = 8.0
-
-    # Signal weights (for multi-signal combination)
-    weight_lexical: float = 1.0  # Weight for lexical matching signal
-    weight_coverage: float = 0.0  # Weight for query coverage signal
-    weight_density: float = 0.0  # Weight for term density signal
-    weight_position: float = 0.0  # Weight for term position signal
-    weight_length: float = 0.0  # Weight for document length signal
-    weight_rarity: float = 0.0  # Weight for rare term bonus
-    weight_custom: float = 0.0  # Weight for custom signal
-
-    # Combination strategy
-    combination_mode: str = "linear"  # Options: linear, multiplicative, max, learned
-
-    # Normalization
-    normalize_signals: bool = False
-
-    # Bounds and constraints
-    max_score: float = 100.0
-    min_score: float = 0.0
+    k1: float = 0.9
+    b: float = 0.4
     epsilon: float = 1e-9
 
-    # Feature extraction settings
-    use_positions: bool = False  # Track term positions (expensive)
-    use_bigrams: bool = False  # Include bigram matching
-    use_field_weights: bool = False  # Weight different fields differently
 
-    # ===== ADD NEW PARAMETERS HERE =====
+# -----------------------------------------------------------------------------
+# IDF — EVOLVE: fundamental term importance (e.g. rarity, discriminativity)
+# -----------------------------------------------------------------------------
 
+def idf(df: float | NDArray[np.float64], N: int) -> float | NDArray[np.float64]:
+    """Term importance from document frequency. EVOLVE: try other formulations."""
+    return np.log(1.0 + (N - df + 0.5) / (df + 0.5))
 
-# =============================================================================
-# EVOLUTION TARGET 2: Feature Extractors
-# =============================================================================
 
-
-class FeatureExtractors:
-    """
-    Low-level feature extraction functions - EVOLUTION TARGET.
-
-    These extract raw features from documents and queries that can be
-    used by the signal computation functions.
-    """
-
-    @staticmethod
-    def term_frequency(doc_tf: Counter[str], term: str) -> float:
-        """Get term frequency in document."""
-        return float(doc_tf.get(term, 0))
-
-    @staticmethod
-    def document_frequency(corpus_df: Counter[str], term: str) -> float:
-        """Get document frequency of term in corpus."""
-        return float(corpus_df.get(term, 1))
-
-    @staticmethod
-    def inverse_document_frequency(df: float, N: int) -> float:
-        """Compute IDF from document frequency."""
-        # ===== EVOLVE THIS FORMULA =====
-        # Lucene/Pyserini IDF (always non-negative)
-        return math.log(1 + (N - df + 0.5) / (df + 0.5))
-
-    @staticmethod
-    def inverse_document_frequency_vectorized(
-        df: NDArray[np.float64], N: int
-    ) -> NDArray[np.float64]:
-        """Compute IDF vectorized for arrays."""
-        return np.log(1 + (N - df + 0.5) / (df + 0.5))
-
-    @staticmethod
-    def term_density(tf: float, doc_length: float) -> float:
-        """Compute term density (tf / doc_length)."""
-        return tf / (doc_length + Config.epsilon)
-
-    @staticmethod
-    def relative_length(doc_length: float, avg_length: float) -> float:
-        """Compute relative document length."""
-        return doc_length / (avg_length + Config.epsilon)
-
-    @staticmethod
-    def query_coverage(matched_terms: int, total_terms: int) -> float:
-        """Compute what fraction of query terms appear in document."""
-        if total_terms <= 0:
-            return 0.0
-        return matched_terms / total_terms
-
-    @staticmethod
-    def rarity_score(idf: float, threshold: float = 3.0) -> float:
-        """Score based on term rarity."""
-        return max(0.0, idf - threshold)
-
-    # ===== ADD NEW FEATURE EXTRACTORS HERE =====
-
-    @staticmethod
-    def term_burstiness(tf: float, doc_length: float, avg_tf: float) -> float:
-        """
-        Measure if term is "bursty" (appears more than expected).
-        High burstiness might indicate topical relevance.
-        """
-        expected = avg_tf * (doc_length / 100.0)
-        return tf / (expected + Config.epsilon) - 1.0 if expected > 0 else 0.0
-
-
-# =============================================================================
-# EVOLUTION TARGET 3: Signal Definitions
-# =============================================================================
-
-
-class Signals:
-    """
-    Compute individual scoring signals - EVOLUTION TARGET.
-
-    Each signal captures a different aspect of relevance.
-    AlphaEvolve can modify signals, add new ones, or remove unused ones.
-    """
-
-    @staticmethod
-    def lexical_signal(
-        query_terms: list[str],
-        doc_tf: Counter[str],
-        corpus_df: Counter[str],
-        N: int,
-        doc_length: float,
-        avg_length: float,
-    ) -> float:
-        """
-        Classic lexical matching signal (BM25-like) - EVOLUTION TARGET.
-
-        This is the core relevance signal based on term matching.
-        """
-        # ===== EVOLVE THIS SIGNAL =====
-
-        k1 = Config.k1
-        b = Config.b
-
-        score = 0.0
-        for term in query_terms:
-            tf = FeatureExtractors.term_frequency(doc_tf, term)
-            if tf <= 0:
-                continue
-
-            df = FeatureExtractors.document_frequency(corpus_df, term)
-            idf = FeatureExtractors.inverse_document_frequency(df, N)
-
-            # Length normalization (Lucene formula, matches pyserini exactly)
-            norm = 1.0 - b + b * (doc_length / avg_length) if avg_length > 0 else 1.0
-
-            # TF saturation (Lucene formula: no k1+1 multiplier, matches pyserini exactly)
-            tf_component = tf / (tf + k1 * norm) if (tf + k1 * norm) > 0 else 0.0
-
-            score += idf * tf_component
-
-        return score
-
-    @staticmethod
-    def lexical_signal_vectorized(
-        query_term_ids: list[int],
-        candidate_docs: NDArray[np.int64],
-        corpus: Corpus,
-        query_term_weights: NDArray[np.float64] | None = None,
-    ) -> NDArray[np.float64]:
-        """
-        Lexical signal computed using vectorized operations - OPTIMIZATION.
-
-        Args:
-            query_term_ids: List of term IDs in the query
-            candidate_docs: Array of candidate document indices
-            corpus: Corpus with tf_matrix, idf_array, norm_array
-            query_term_weights: Query term frequency weights (same length as query_term_ids)
-                               If None, all terms have weight 1.0
-        """
-        if len(candidate_docs) == 0:
-            return np.array([], dtype=np.float64)
-
-        k1 = Config.k1
-        norms = corpus.norm_array[candidate_docs]
-        scores = np.zeros(len(candidate_docs), dtype=np.float64)
-
-        for i, term_id in enumerate(query_term_ids):
-            idf = corpus.idf_array[term_id]
-            if idf <= 0:
-                continue
-
-            # Get query term weight (frequency)
-            weight = query_term_weights[i] if query_term_weights is not None else 1.0
-
-            tf_row = corpus.tf_matrix[term_id, candidate_docs].toarray().flatten()
-            tf_saturated = tf_row / (tf_row + k1 * norms + Config.epsilon)
-            scores += weight * idf * tf_saturated
-
-        return scores
-
-    @staticmethod
-    def coverage_signal(
-        query_terms: list[str],
-        doc_tf: Counter[str],
-    ) -> float:
-        """
-        Query coverage signal - EVOLUTION TARGET.
-
-        Rewards documents that match more query terms.
-        """
-        # ===== EVOLVE THIS SIGNAL =====
-
-        if not query_terms:
-            return 0.0
-
-        matched = sum(1 for term in query_terms if doc_tf.get(term, 0) > 0)
-        coverage = matched / len(query_terms)
-
-        # Non-linear scaling (rewards full coverage)
-        return coverage**2
-
-    @staticmethod
-    def density_signal(
-        query_terms: list[str],
-        doc_tf: Counter[str],
-        doc_length: float,
-    ) -> float:
-        """
-        Term density signal - EVOLUTION TARGET.
-
-        Rewards documents where query terms are dense.
-        """
-        # ===== EVOLVE THIS SIGNAL =====
-
-        if doc_length <= 0:
-            return 0.0
-
-        total_tf = sum(doc_tf.get(term, 0) for term in query_terms)
-        density = total_tf / doc_length
-
-        # Saturate to prevent extreme values
-        return math.log(1.0 + density * 10)
-
-    @staticmethod
-    def length_signal(
-        doc_length: float,
-        avg_length: float,
-    ) -> float:
-        """
-        Document length signal - EVOLUTION TARGET.
-
-        Can be used to prefer shorter or longer documents.
-        """
-        # ===== EVOLVE THIS SIGNAL =====
-
-        ratio = doc_length / (avg_length + Config.epsilon)
-
-        # Penalize very long documents
-        if ratio > 2.0:
-            return -math.log(ratio)
-
-        return 0.0
-
-    @staticmethod
-    def rarity_signal(
-        query_terms: list[str],
-        doc_tf: Counter[str],
-        corpus_df: Counter[str],
-        N: int,
-    ) -> float:
-        """
-        Rare term bonus signal - EVOLUTION TARGET.
-
-        Extra reward for matching very rare terms.
-        """
-        # ===== EVOLVE THIS SIGNAL =====
-
-        score = 0.0
-        for term in query_terms:
-            tf = doc_tf.get(term, 0)
-            if tf <= 0:
-                continue
-
-            df = corpus_df.get(term, 1)
-            idf = FeatureExtractors.inverse_document_frequency(df, N)
-
-            # Only boost very rare terms
-            if idf > 4.0:
-                score += (idf - 4.0) * math.log(1 + tf)
-
-        return score
-
-    @staticmethod
-    def custom_signal(
-        query_terms: list[str],
-        doc_tf: Counter[str],
-        corpus_df: Counter[str],
-        N: int,
-        doc_length: float,
-        avg_length: float,
-    ) -> float:
-        """
-        Custom signal - PRIMARY EVOLUTION TARGET.
-
-        This is a blank slate for AlphaEvolve to create entirely new
-        relevance signals that don't fit existing categories.
-        """
-        # ===== EVOLVE: CREATE SOMETHING NEW HERE =====
-
-        # Placeholder: return 0 (no contribution by default)
-        return 0.0
-
-    # ===== ADD MORE SIGNALS HERE =====
-
-
-# =============================================================================
-# EVOLUTION TARGET 4: Signal Combiner
-# =============================================================================
-
-
-class SignalCombiner:
-    """
-    Combines multiple signals into a final score - EVOLUTION TARGET.
-
-    AlphaEvolve can change the combination strategy entirely.
-    """
-
-    @staticmethod
-    def combine(signals: dict[str, float]) -> float:
-        """
-        Combine signals into final score - EVOLUTION TARGET.
-
-        Args:
-            signals: Dictionary of signal_name -> signal_value
-
-        Returns:
-            Combined score
-        """
-        # ===== EVOLVE THIS COMBINATION STRATEGY =====
-
-        mode = Config.combination_mode
-
-        if mode == "linear":
-            return SignalCombiner._linear_combination(signals)
-        elif mode == "multiplicative":
-            return SignalCombiner._multiplicative_combination(signals)
-        elif mode == "max":
-            return SignalCombiner._max_combination(signals)
-        elif mode == "learned":
-            return SignalCombiner._learned_combination(signals)
-        else:
-            return SignalCombiner._linear_combination(signals)
-
-    @staticmethod
-    def _linear_combination(signals: dict[str, float]) -> float:
-        """Weighted linear sum of signals."""
-        weights = {
-            "lexical": Config.weight_lexical,
-            "coverage": Config.weight_coverage,
-            "density": Config.weight_density,
-            "length": Config.weight_length,
-            "rarity": Config.weight_rarity,
-            "custom": Config.weight_custom,
-        }
-
-        score = 0.0
-        for name, value in signals.items():
-            weight = weights.get(name, 0.0)
-            score += weight * value
-
-        return score
-
-    @staticmethod
-    def _multiplicative_combination(signals: dict[str, float]) -> float:
-        """Product of (1 + weighted_signal) factors."""
-        weights = {
-            "lexical": Config.weight_lexical,
-            "coverage": Config.weight_coverage,
-            "density": Config.weight_density,
-            "length": Config.weight_length,
-            "rarity": Config.weight_rarity,
-            "custom": Config.weight_custom,
-        }
-
-        product = 1.0
-        for name, value in signals.items():
-            weight = weights.get(name, 0.0)
-            if weight > 0:
-                product *= 1.0 + weight * value
-
-        return product - 1.0
-
-    @staticmethod
-    def _max_combination(signals: dict[str, float]) -> float:
-        """Take maximum weighted signal."""
-        weights = {
-            "lexical": Config.weight_lexical,
-            "coverage": Config.weight_coverage,
-            "density": Config.weight_density,
-            "length": Config.weight_length,
-            "rarity": Config.weight_rarity,
-            "custom": Config.weight_custom,
-        }
-
-        weighted_signals = [weights.get(name, 0.0) * value for name, value in signals.items()]
-
-        return max(weighted_signals) if weighted_signals else 0.0
-
-    @staticmethod
-    def _learned_combination(signals: dict[str, float]) -> float:
-        """
-        Non-linear combination - EVOLUTION TARGET.
-
-        This is where AlphaEvolve can discover complex interactions
-        between signals.
-        """
-        # ===== EVOLVE THIS FUNCTION =====
-
-        lex = signals.get("lexical", 0.0)
-        cov = signals.get("coverage", 0.0)
-        _den = signals.get("density", 0.0)  # noqa: F841 - reserved for evolution
-        rar = signals.get("rarity", 0.0)
-
-        # Example: non-linear interaction
-        base = lex * Config.weight_lexical
-
-        # Boost if coverage is high
-        if cov > 0.8:
-            base *= 1.2
-
-        # Add rarity bonus
-        base += rar * Config.weight_rarity
-
-        return base
-
-
-# =============================================================================
-# EVOLUTION TARGET 5: Document Representation
-# =============================================================================
-
+# -----------------------------------------------------------------------------
+# Document representation — EVOLVE: what to store per document
+# -----------------------------------------------------------------------------
 
 class DocumentRepr:
-    """
-    Document representation - EVOLUTION TARGET.
-
-    How we represent a document for scoring. AlphaEvolve can add new
-    fields or change how documents are represented.
-    """
-
     def __init__(self, term_frequencies: Counter[str], length: float):
-        # Core representation
         self.term_frequencies = term_frequencies
         self.length = length
 
-    # ===== EVOLVE: ADD NEW REPRESENTATIONS HERE =====
-
     @classmethod
     def from_tokens(cls, tokens: list[str]) -> DocumentRepr:
-        """Create representation from tokens."""
-        return cls(
-            term_frequencies=Counter(tokens),
-            length=float(len(tokens)),
-        )
+        """EVOLVE: different document views (e.g. positions, fields)."""
+        return cls(term_frequencies=Counter(tokens), length=float(len(tokens)))
 
 
-# =============================================================================
-# EVOLUTION TARGET 6: Query Representation
-# =============================================================================
-
+# -----------------------------------------------------------------------------
+# Query representation — EVOLVE: how to represent the query
+# -----------------------------------------------------------------------------
 
 class QueryRepr:
-    """
-    Query representation - EVOLUTION TARGET.
-
-    How we represent a query for scoring. AlphaEvolve can add new
-    fields or change how queries are processed.
-    """
-
-    def __init__(self, terms: list[str], term_weights: dict[str, float]):
-        # Core representation
+    def __init__(self, terms: list[str], term_weights: dict[str, float] | None = None):
         self.terms = terms
-        self.term_weights = term_weights
-
-    # ===== EVOLVE: ADD NEW REPRESENTATIONS HERE =====
+        self.term_weights = term_weights or {t: 1.0 for t in terms}
 
     @classmethod
     def from_tokens(cls, tokens: list[str]) -> QueryRepr:
-        """Create representation from tokens."""
-        # ===== EVOLVE THIS PROCESSING =====
-
-        # Pyserini-style: keep all tokens (including duplicates)
-        all_terms = tokens
-
-        # Uniform weights by default
-        term_weights = {term: 1.0 for term in all_terms}
-
-        return cls(
-            terms=all_terms,
-            term_weights=term_weights,
-        )
+        """EVOLVE: query expansion, term weighting, dedup, etc."""
+        return cls(terms=tokens, term_weights={t: 1.0 for t in tokens})
 
 
-# =============================================================================
-# EVOLUTION TARGET 7: Scoring Engine
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Lexical retrieval score — EVOLVE: the core relevance formula
+# -----------------------------------------------------------------------------
 
-
-class ScoringEngine:
-    """
-    Main scoring engine - EVOLUTION TARGET.
-
-    This orchestrates the entire scoring process. AlphaEvolve can
-    restructure the pipeline, add preprocessing, postprocessing, etc.
-    """
-
-    def __init__(self, corpus: Corpus):
-        self.corpus = corpus
-
-    def score(self, query: QueryRepr, doc_idx: int) -> float:
-        """
-        Score a document for a query - EVOLUTION TARGET.
-
-        Args:
-            query: Query representation
-            doc_idx: Document index
-
-        Returns:
-            Relevance score
-        """
-        # ===== EVOLVE THIS ENTIRE METHOD =====
-
-        # Step 1: Get document data
-        doc_tf = self.corpus.get_term_frequencies(doc_idx)
-        doc_length = self.corpus.doc_lengths[doc_idx]
-        avg_length = self.corpus.avgdl
-        N = self.corpus.N
-
-        # Step 2: Compute signals
-        signals = {}
-
-        # Lexical signal (always computed)
-        signals["lexical"] = Signals.lexical_signal(
-            query.terms,
-            doc_tf,
-            self.corpus.document_frequency,
-            N,
-            doc_length,
-            avg_length,
-        )
-
-        # Optional signals (controlled by weights)
-        if Config.weight_coverage > 0:
-            signals["coverage"] = Signals.coverage_signal(query.terms, doc_tf)
-
-        if Config.weight_density > 0:
-            signals["density"] = Signals.density_signal(
-                query.terms,
-                doc_tf,
-                doc_length,
-            )
-
-        if Config.weight_length > 0:
-            signals["length"] = Signals.length_signal(doc_length, avg_length)
-
-        if Config.weight_rarity > 0:
-            signals["rarity"] = Signals.rarity_signal(
-                query.terms,
-                doc_tf,
-                self.corpus.document_frequency,
-                N,
-            )
-
-        if Config.weight_custom > 0:
-            signals["custom"] = Signals.custom_signal(
-                query.terms,
-                doc_tf,
-                self.corpus.document_frequency,
-                N,
-                doc_length,
-                avg_length,
-            )
-
-        # Step 3: Combine signals
-        score = SignalCombiner.combine(signals)
-
-        # Step 4: Apply bounds
-        score = max(Config.min_score, min(score, Config.max_score))
-
-        return score
-
-
-# =============================================================================
-# EVOLUTION TARGET 8: Main Scoring Function
-# =============================================================================
-
-
-def score_document(
-    query: list[str],
-    doc_idx: int,
-    corpus: Corpus,
+def retrieval_score(
+    query_repr: QueryRepr,
+    doc_tf: Counter[str],
+    doc_length: float,
+    N: int,
+    avgdl: float,
+    corpus_df: Counter[str],
 ) -> float:
     """
-    Main entry point for document scoring - EVOLUTION TARGET.
-
-    This is the top-level function that can be completely restructured.
-
-    Args:
-        query: Raw query tokens
-        doc_idx: Document index to score
-        corpus: Corpus with statistics
-
-    Returns:
-        Relevance score
+    Score one document for one query. This is the lexical retrieval method.
+    EVOLVE: design a formulation with deep, fundamental, intuitive justification.
+    Default: Lucene BM25 (IDF × saturated TF, length-normalized).
     """
-    # ===== EVOLVE THIS ENTIRE FUNCTION =====
+    k1, b, eps = Config.k1, Config.b, Config.epsilon
+    score = 0.0
+    for term in query_repr.terms:
+        tf = float(doc_tf.get(term, 0))
+        if tf <= 0:
+            continue
+        df = float(corpus_df.get(term, 1))
+        term_idf = float(idf(df, N))
+        norm = 1.0 - b + b * (doc_length / (avgdl + eps)) if avgdl > 0 else 1.0
+        tf_part = tf / (tf + k1 * norm + eps)
+        w = query_repr.term_weights.get(term, 1.0)
+        score += w * term_idf * tf_part
+    return score
 
+
+def score_document(query: list[str], doc_idx: int, corpus: Corpus) -> float:
+    """Entry point used by BM25.score(). EVOLVE: change pipeline if needed."""
     if not query:
         return 0.0
-
-    # Create query representation
-    query_repr = QueryRepr.from_tokens(query)
-
-    if not query_repr.terms:
+    q = QueryRepr.from_tokens(query)
+    if not q.terms:
         return 0.0
-
-    # Use scoring engine
-    engine = ScoringEngine(corpus)
-
-    return engine.score(query_repr, doc_idx)
+    doc_tf = corpus.get_term_frequencies(doc_idx)
+    doc_length = float(corpus.doc_lengths[doc_idx])
+    return retrieval_score(q, doc_tf, doc_length, corpus.N, corpus.avgdl, corpus.document_frequency)
 
 
-# =============================================================================
-# Tokenization - Uses proper Porter stemmer from bm25.py
-# =============================================================================
-# LUCENE_STOPWORDS, ENGLISH_STOPWORDS, and LuceneTokenizer imported from ranking_evolved.bm25
+# -----------------------------------------------------------------------------
+# Tokenization (fixed for evaluator)
+# -----------------------------------------------------------------------------
 
-# Global tokenizer instance (lazy initialization)
 _TOKENIZER: _BaseLuceneTokenizer | None = None
 
-
 def _get_tokenizer() -> _BaseLuceneTokenizer:
-    """Get or create the shared tokenizer instance."""
     global _TOKENIZER
     if _TOKENIZER is None:
         _TOKENIZER = _BaseLuceneTokenizer()
     return _TOKENIZER
 
-
 def tokenize(text: str) -> list[str]:
-    """
-    Tokenize text using Lucene-style processing.
-
-    Uses the proper PorterStemmer from bm25.py that matches Pyserini/Lucene exactly.
-
-    Applies:
-    - Lowercasing
-    - Alphanumeric token extraction
-    - Stopword removal (33 Lucene stopwords)
-    - Porter stemming (full algorithm)
-    """
     return _get_tokenizer()(text)
 
-
 class LuceneTokenizer:
-    """
-    Lucene-compatible tokenizer.
-
-    Uses the proper PorterStemmer from bm25.py that matches Pyserini/Lucene exactly.
-
-    Applies:
-    - Tokenization on non-letter boundaries
-    - Lowercasing
-    - Porter stemming (full algorithm matching Lucene)
-    - English stopword removal (33 words)
-    """
-
     def __init__(self):
         self._tokenizer = _BaseLuceneTokenizer()
-
     def __call__(self, text: str) -> list[str]:
-        """Tokenize text."""
         return self._tokenizer(text)
 
 
-# =============================================================================
-# Corpus - OPTIMIZED with Inverted Index + Sparse Matrix
-# =============================================================================
-
+# -----------------------------------------------------------------------------
+# Corpus (interface fixed for evaluator; internals can evolve if needed)
+# -----------------------------------------------------------------------------
 
 class Corpus:
-    """
-    Corpus with pre-computed statistics - OPTIMIZED.
-
-    OPTIMIZATIONS:
-    1. Inverted Index - posting lists for each term
-    2. Sparse Matrix - CSR format for fast TF lookups
-    3. Pre-computed arrays - doc lengths, avgdl, IDF, length norm
-
-    Stores tokenized documents and computes corpus statistics needed for scoring.
-    """
-
-    def __init__(
-        self,
-        documents: list[list[str]],
-        ids: list[str] | None = None,
-    ):
-        """
-        Initialize corpus with optimized data structures.
-
-        Args:
-            documents: List of tokenized documents (each is list of terms)
-            ids: Optional document IDs
-        """
+    def __init__(self, documents: list[list[str]], ids: list[str] | None = None):
         self.documents = documents
         self.ids = ids or [str(i) for i in range(len(documents))]
         self._id_to_idx = {doc_id: i for i, doc_id in enumerate(self.ids)}
-
-        # Corpus statistics
         self.N = len(documents)
         self.document_count = self.N
         self.doc_lengths = np.array([len(d) for d in documents], dtype=np.float64)
         self.avgdl = float(np.mean(self.doc_lengths)) if self.N > 0 else 1.0
         self.average_document_length = self.avgdl
 
-        # Build vocabulary first pass - collect all terms
         self._vocab: dict[str, int] = {}
-        term_idx = 0
         for doc in documents:
             for term in doc:
                 if term not in self._vocab:
-                    self._vocab[term] = term_idx
-                    term_idx += 1
-
+                    self._vocab[term] = len(self._vocab)
         self.vocab_size = len(self._vocab)
 
-        # Build sparse term-document matrix and inverted index
         tf_matrix_lil = lil_matrix((self.vocab_size, self.N), dtype=np.float64)
         self._inverted_index: dict[int, list[int]] = {i: [] for i in range(self.vocab_size)}
         self._df = np.zeros(self.vocab_size, dtype=np.float64)
-
-        # Also build document-level term frequency dicts for evolvable scoring
         self._doc_tf_dicts: list[Counter[str]] = [Counter(doc) for doc in documents]
 
         for doc_idx, doc in enumerate(documents):
             term_counts = Counter(doc)
-            seen_terms = set()
+            seen = set()
             for term, count in term_counts.items():
-                term_id = self._vocab[term]
-                tf_matrix_lil[term_id, doc_idx] = count
-                if term_id not in seen_terms:
-                    self._inverted_index[term_id].append(doc_idx)
-                    self._df[term_id] += 1
-                    seen_terms.add(term_id)
+                tid = self._vocab[term]
+                tf_matrix_lil[tid, doc_idx] = count
+                if tid not in seen:
+                    self._inverted_index[tid].append(doc_idx)
+                    self._df[tid] += 1
+                    seen.add(tid)
 
-        # Convert to CSR for fast row slicing
         self.tf_matrix = csr_matrix(tf_matrix_lil)
-
-        # Convert inverted index lists to numpy arrays
-        self._posting_lists: dict[int, NDArray[np.int64]] = {
-            term_id: np.array(doc_ids, dtype=np.int64)
-            for term_id, doc_ids in self._inverted_index.items()
-            if doc_ids
-        }
-        del self._inverted_index  # Free memory
-
-        # Pre-compute IDF array (OPTIMIZATION)
-        self.idf_array = FeatureExtractors.inverse_document_frequency_vectorized(self._df, self.N)
-
-        # Pre-compute length normalization array (OPTIMIZATION)
+        self.idf_array = np.asarray(idf(self._df, self.N), dtype=np.float64)
         b = Config.b
         self.norm_array = 1.0 - b + b * (self.doc_lengths / max(self.avgdl, 1.0))
-
-        # Legacy interface for score_document compatibility
         self.document_frequency = Counter(
-            {term: int(self._df[term_id]) for term, term_id in self._vocab.items()}
+            {term: max(1, int(self._df[tid])) for term, tid in self._vocab.items()}
         )
+        self._posting_lists: dict[int, NDArray[np.int64]] = {
+            tid: np.array(doc_ids, dtype=np.int64)
+            for tid, doc_ids in self._inverted_index.items()
+            if doc_ids
+        }
+        del self._inverted_index
         self.document_length = self.doc_lengths
 
     def __len__(self) -> int:
@@ -881,37 +207,25 @@ class Corpus:
         return cls(documents, ids)
 
     def get_df(self, term: str) -> int:
-        """Get document frequency for a term."""
-        term_id = self._vocab.get(term)
-        if term_id is None:
-            return 1
-        return max(1, int(self._df[term_id]))
+        tid = self._vocab.get(term)
+        return max(1, int(self._df[tid])) if tid is not None else 1
 
     def get_tf(self, doc_idx: int, term: str) -> int:
-        """Get term frequency in a specific document."""
-        term_id = self._vocab.get(term)
-        if term_id is None:
-            return 0
-        return int(self.tf_matrix[term_id, doc_idx])
+        tid = self._vocab.get(term)
+        return int(self.tf_matrix[tid, doc_idx]) if tid is not None else 0
 
     def get_term_frequencies(self, doc_idx: int) -> Counter[str]:
-        """Get term frequency dictionary for a document (for evolvable scoring)."""
         return self._doc_tf_dicts[doc_idx]
 
     def get_posting_list(self, term: str) -> NDArray[np.int64]:
-        """Get posting list (doc indices containing term)."""
-        term_id = self._vocab.get(term)
-        if term_id is None:
-            return np.array([], dtype=np.int64)
-        return self._posting_lists.get(term_id, np.array([], dtype=np.int64))
+        tid = self._vocab.get(term)
+        return self._posting_lists.get(tid, np.array([], dtype=np.int64)) if tid is not None else np.array([], dtype=np.int64)
 
     def get_term_id(self, term: str) -> int | None:
-        """Get term ID (None if not in vocabulary)."""
         return self._vocab.get(term)
 
     def id_to_idx(self, ids: list[str]) -> list[int]:
-        """Convert document IDs to indices."""
-        return [self._id_to_idx[doc_id] for doc_id in ids if doc_id in self._id_to_idx]
+        return [self._id_to_idx[i] for i in ids if i in self._id_to_idx]
 
     @property
     def map_id_to_idx(self) -> dict[str, int]:
@@ -919,43 +233,26 @@ class Corpus:
 
     @property
     def term_frequency(self) -> list[Counter[str]]:
-        """Legacy interface for score_document."""
         return self._doc_tf_dicts
 
     @property
     def vocabulary_size(self) -> int:
-        """Number of unique terms in corpus (for evaluator compatibility)."""
         return self.vocab_size
 
     @property
     def term_doc_matrix(self) -> None:
-        """Placeholder for evaluator compatibility."""
         return None
 
 
-# =============================================================================
-# BM25 Interface - OPTIMIZED with Vectorization + Parallel Query Processing
-# =============================================================================
-
+# -----------------------------------------------------------------------------
+# BM25 (interface fixed for evaluator)
+# -----------------------------------------------------------------------------
 
 class BM25:
-    """
-    BM25-compatible interface using freeform scoring - OPTIMIZED.
-
-    OPTIMIZATIONS:
-    1. Inverted Index - only score docs containing query terms
-    2. Vectorized scoring - numpy operations instead of loops
-    3. Pre-computed IDF and norm arrays - fast array indexing
-    4. Parallel query processing - ThreadPoolExecutor for batch queries
-
-    All scoring still uses the evolvable multi-signal architecture.
-    """
-
     def __init__(self, corpus: Corpus):
         self.corpus = corpus
 
     def score(self, query: list[str], index: int) -> float:
-        """Score a single document using evolvable kernel."""
         return score_document(query, index, self.corpus)
 
     def _score_candidates_vectorized(
@@ -964,86 +261,51 @@ class BM25:
         candidate_docs: NDArray[np.int64],
         query_term_weights: NDArray[np.float64] | None = None,
     ) -> NDArray[np.float64]:
-        """
-        Score candidate documents using vectorized operations.
-
-        Uses the lexical signal formula in vectorized form.
-
-        Args:
-            query_term_ids: List of term IDs
-            candidate_docs: Array of candidate document indices
-            query_term_weights: Query term frequency weights (same length as query_term_ids)
-        """
+        """Vectorized scoring for rank(); must match retrieval_score formula."""
         if len(candidate_docs) == 0:
             return np.array([], dtype=np.float64)
-
-        # Use vectorized lexical signal with query term weights
-        return Signals.lexical_signal_vectorized(
-            query_term_ids, candidate_docs, self.corpus, query_term_weights
-        )
+        k1, eps = Config.k1, Config.epsilon
+        norms = self.corpus.norm_array[candidate_docs]
+        scores = np.zeros(len(candidate_docs), dtype=np.float64)
+        for i, term_id in enumerate(query_term_ids):
+            idf_val = self.corpus.idf_array[term_id]
+            if idf_val <= 0:
+                continue
+            w = query_term_weights[i] if query_term_weights is not None else 1.0
+            tf_row = self.corpus.tf_matrix[term_id, candidate_docs].toarray().flatten()
+            tf_part = tf_row / (tf_row + k1 * norms + eps)
+            scores += w * idf_val * tf_part
+        return scores
 
     def rank(
         self,
         query: list[str],
         top_k: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Rank all documents by relevance - OPTIMIZED.
-
-        Uses inverted index to find candidates, then vectorized scoring.
-        Handles query term frequency (qtf) - duplicate terms contribute
-        multiple times to the score, matching Pyserini behavior.
-        """
         if not query:
-            indices = np.arange(self.corpus.N, dtype=np.int64)
-            scores = np.zeros(self.corpus.N, dtype=np.float64)
-            return indices, scores
-
-        # Count query term frequencies (qtf) to match Pyserini behavior
+            return np.arange(self.corpus.N, dtype=np.int64), np.zeros(self.corpus.N, dtype=np.float64)
         term_counts = Counter(query)
-
-        # Get term IDs and their weights
         query_term_ids = []
         query_term_weights = []
         for term, count in term_counts.items():
-            term_id = self.corpus.get_term_id(term)
-            if term_id is not None:
-                query_term_ids.append(term_id)
+            tid = self.corpus.get_term_id(term)
+            if tid is not None:
+                query_term_ids.append(tid)
                 query_term_weights.append(float(count))
-
         if not query_term_ids:
-            indices = np.arange(self.corpus.N, dtype=np.int64)
-            scores = np.zeros(self.corpus.N, dtype=np.float64)
-            return indices, scores
-
-        # Convert weights to numpy array
-        qtf_weights = np.array(query_term_weights, dtype=np.float64)
-
-        # OPTIMIZATION: Get candidate documents from inverted index
+            return np.arange(self.corpus.N, dtype=np.int64), np.zeros(self.corpus.N, dtype=np.float64)
+        qtf = np.array(query_term_weights, dtype=np.float64)
         candidate_set: set[int] = set()
-        for term_id in query_term_ids:
-            posting_list = self.corpus._posting_lists.get(term_id, np.array([], dtype=np.int64))
-            candidate_set.update(posting_list.tolist())
-
+        for tid in query_term_ids:
+            candidate_set.update(self.corpus._posting_lists.get(tid, np.array([], dtype=np.int64)).tolist())
         candidate_docs = np.array(sorted(candidate_set), dtype=np.int64)
-
-        # OPTIMIZATION: Vectorized scoring with query term frequency weights
-        candidate_scores = self._score_candidates_vectorized(
-            query_term_ids, candidate_docs, qtf_weights
-        )
-
-        # Build full score array
+        candidate_scores = self._score_candidates_vectorized(query_term_ids, candidate_docs, qtf)
         all_scores = np.zeros(self.corpus.N, dtype=np.float64)
         all_scores[candidate_docs] = candidate_scores
-
-        # Sort by score descending
         sorted_indices = np.argsort(-all_scores).astype(np.int64)
         sorted_scores = all_scores[sorted_indices]
-
         if top_k is not None:
-            sorted_indices = sorted_indices[:top_k]
-            sorted_scores = sorted_scores[:top_k]
-
+            sorted_indices, sorted_scores = sorted_indices[:top_k], sorted_scores[:top_k]
         return sorted_indices, sorted_scores
 
     def batch_rank(
@@ -1051,38 +313,23 @@ class BM25:
         queries: list[list[str]],
         top_k: int | None = None,
     ) -> list[tuple[np.ndarray, np.ndarray]]:
-        """Rank for multiple queries - OPTIMIZED with parallel processing."""
         if len(queries) < MIN_QUERIES_FOR_PARALLEL:
-            return [self.rank(query, top_k) for query in queries]
+            return [self.rank(q, top_k) for q in queries]
+        with ThreadPoolExecutor(max_workers=NUM_QUERY_WORKERS) as ex:
+            return list(ex.map(lambda q: self.rank(q, top_k), queries))
 
-        def rank_single(query: list[str]) -> tuple[np.ndarray, np.ndarray]:
-            return self.rank(query, top_k)
-
-        with ThreadPoolExecutor(max_workers=NUM_QUERY_WORKERS) as executor:
-            results = list(executor.map(rank_single, queries))
-
-        return results
-
-
-# =============================================================================
-# Module exports
-# =============================================================================
 
 __all__ = [
-    # Interface classes
     "BM25",
     "Corpus",
     "tokenize",
     "LuceneTokenizer",
     "LUCENE_STOPWORDS",
     "ENGLISH_STOPWORDS",
-    # Evolution targets
     "Config",
-    "FeatureExtractors",
-    "Signals",
-    "SignalCombiner",
     "DocumentRepr",
     "QueryRepr",
-    "ScoringEngine",
+    "idf",
+    "retrieval_score",
     "score_document",
 ]

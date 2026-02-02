@@ -1,35 +1,33 @@
-# OpenEvolve configuration for Composable BM25 Seed Program
+# OpenEvolve configuration for Composable FAST BM25 Seed Program
 #
-# Seed Program: src/ranking_evolved/bm25_composable.py (~650 lines)
+# Seed Program: src/ranking_evolved/bm25_composable_fast.py
 #
-# GOAL: Discover novel combinations of scoring primitives
-# - Mix and match building blocks from the primitives library
-# - Create new combinations not found in standard BM25
-# - Add new primitives when needed
-# - Explore different term scoring and aggregation strategies
+# GOAL: Discovery of new IR methods (lexical retrieval algorithms).
+# The seed frames retrieval as PRIMITIVES (atoms: IDF, TF, saturation, norm, aggregation)
+# plus STRUCTURE (how they are combined). Your job is to invent new algorithms:
+# new formulas, new primitives, or new structure—not just recombine existing primitives.
 #
-# This is the MODERATE FREEDOM approach - building blocks can be combined freely.
+# FAST EVALUATION: Set EVAL_EXCLUDE_DATASETS before running (align with commands.txt).
 #
-# Run with:
+# Run (align with commands.txt):
+#   export EVAL_EXCLUDE_DATASETS="dl19,dl20,fever,climate-fever,hotpotqa,dbpedia-entity,nq,quora,webis-touche2020,cqadupstack,leetcode,aops,theoremqa_questions,robotics,psychology,sustainable_living"
 #   export OPENAI_API_KEY="your-key"
-#   uv run openevolve-run src/ranking_evolved/bm25_composable.py evaluator_parallel.py --config openevolve_config_composable.yaml
+#   uv run python -m openevolve.cli src/ranking_evolved/bm25_composable_fast.py evaluator_parallel.py --config openevolve_config_composable.yaml --output openevolve_output_composable_fast
 #
-# Environment variables for evaluation:
-#   EVAL_BENCHMARKS=all          # all | bright | beir | bright+beir
-#   EVAL_SAMPLE_QUERIES=20       # Sample N queries per dataset (0 = all)
-#   EVAL_TOKENIZER=lucene        # simple or lucene
-#   EVAL_MAX_WORKERS=0           # 0 = auto (based on cores/memory)
-#   EVAL_THREADS_PER_WORKER=8    # Threads for tokenization
+# Datasets evaluated (12): nfcorpus, scifact, pony, arguana, theoremqa_theorems, scidocs, biology, earth_science, economics, stackoverflow, fiqa, trec-covid
+#
+# Output: evolution_trace.jsonl (prompts + LLM responses when include_prompts: true), checkpoints/checkpoint_<N>/, best/
 
-max_iterations: 300  # More iterations for larger search space
-log_level: "INFO"
+max_iterations: 10  # More iterations for larger search space
+checkpoint_interval: 5
+log_level: "DEBUG"
 random_seed: 42
 diff_based_evolution: true
-max_code_length: 25000  # bm25_composable.py is ~650 lines (~20k chars)
+max_code_length: 30000  # bm25_composable_fast.py
 
 llm:
   models:
-    - name: "gpt-4o"
+    - name: "gpt-5.2"
       weight: 1.0
   api_base: "https://api.openai.com/v1"
   api_key: null  # falls back to OPENAI_API_KEY env var
@@ -42,122 +40,57 @@ llm:
 
 prompt:
   system_message: |
-    You are evolving a COMPOSABLE ranking function evaluated on IR benchmarks.
+    You are evolving a LEXICAL RETRIEVAL algorithm. The goal is discovery of new IR methods—invent new algorithms, not just recombine existing primitives.
+    
+    ## View: Primitives + Structure
+    Lexical retrieval in this codebase is PRIMITIVES (atoms) + STRUCTURE (how they combine).
+    - Primitives: IDF, TF, saturation, length norm, aggregation (weighted sum, means, etc.).
+    - Structure: how term scores become doc scores, how the pipeline is organized.
+    The seed is one structure (BM25-like). You can change parameters, add or invent new primitives, change formulas, or change structure. Prefer inventing new formulas or new primitives over only swapping which existing primitive is used where.
     
     ## Evaluation Metrics
-    You receive detailed metrics for each dataset:
-    - nDCG@10: Normalized Discounted Cumulative Gain (ranking quality)
-    - Recall@100: Coverage metric (retrieval completeness)
-    - index_time_ms: Time to tokenize corpus and build index
-    - query_time_ms: Time to evaluate all queries
+    Per dataset: nDCG@10, Recall@100, index_time_ms, query_time_ms.
+    Aggregate: avg_ndcg@10, avg_recall@100, combined_score = 0.8*avg_recall@100 + 0.2*avg_ndcg@10 (used to rank solutions).
+    Use per-dataset metrics to find weak spots.
     
-    Aggregate metrics:
-    - avg_ndcg@10: Macro-average across all datasets
-    - avg_recall@100: Macro-average across all datasets
-    - combined_score: (avg_ndcg@10 + avg_recall@100) / 2
+    ## Evolution Targets (bm25_composable_fast.py)
     
-    Use per-dataset metrics to identify weak spots and optimize accordingly.
+    ### 1. EvolvedParameters
+    Numeric constants: k1, b, k3, delta, alpha, beta, gamma, epsilon, max_idf, min_idf. Change or add parameters via SEARCH/REPLACE.
     
-    ## Philosophy
-    You have a library of scoring PRIMITIVES (building blocks). Your job is to:
-    1. Choose which primitives to use
-    2. Combine them in novel ways
-    3. Add new primitives when needed
-    4. Discover effective combinations not in standard BM25
+    ### 2. ScoringPrimitives
+    Atoms: idf_* (classic, lucene, atire, bm25plus, smooth), tf_* (raw, log, double_log, boolean, augmented), saturate_* (basic, lucene, bm25, bm25l, bm25plus, log), length_norm_* (bm25, pivot, log), multiply, add, weighted_sum, geometric_mean, harmonic_mean, soft_max, query_weight_*, coverage_bonus, rarity_boost.
+    You can add new primitives with new formulas (e.g. a new saturation curve, a new IDF variant). Invent when it might help; don’t limit yourself to recombining only what’s there.
     
-    Think of it like LEGO blocks - the pieces are provided, you decide how to assemble them.
+    ### 3. TermScorer.score(tf, df, N, dl, avgdl)
+    One term’s contribution. Evolve the formula: new combination of primitives or new math (e.g. asymmetric term importance, different saturation).
     
-    ## Evolution Targets (in bm25_composable.py)
+    ### 4. DocumentScorer.score(term_scores, query_weights, matched_count, total_query_terms)
+    Aggregate term scores into doc score. Evolve aggregation or add terms (e.g. coverage, rarity).
     
-    ### 1. EvolvedParameters - All numeric constants
-    ```python
-    k1: float = 1.2      # TF saturation
-    b: float = 0.75      # Length normalization
-    k3: float = 8.0      # Query TF saturation
-    delta: float = 0.5   # Bonus for matching (BM25+/BM25L)
-    alpha: float = 1.0   # IDF weight
-    beta: float = 1.0    # TF weight
-    gamma: float = 0.0   # Coverage bonus weight
-    max_idf: float = 10.0
-    min_idf: float = 0.0
-    ```
+    ### 5. QueryProcessor.process(query) → (terms, weights)
+    Evolve how the query is interpreted (weighting, dedup).
     
-    ### 2. ScoringPrimitives - Building blocks library
-    
-    **IDF Primitives:**
-    - `idf_classic(df, N)` - Robertson: log((N-df+0.5)/(df+0.5))
-    - `idf_lucene(df, N)` - Non-negative: log(1+(N-df+0.5)/(df+0.5))
-    - `idf_atire(df, N)` - Simple: log(N/df)
-    - `idf_bm25plus(df, N)` - BM25+: log((N+1)/df)
-    - `idf_smooth(df, N)` - Smoothed: log((N+0.5)/(df+0.5))
-    
-    **TF Primitives:**
-    - `tf_raw(tf)` - No transformation
-    - `tf_log(tf)` - Logarithmic: 1+log(tf)
-    - `tf_double_log(tf)` - Double log: 1+log(1+log(tf))
-    - `tf_boolean(tf)` - Binary: 1 if present, else 0
-    - `tf_augmented(tf, max_tf)` - Augmented: 0.5+0.5*(tf/max_tf)
-    
-    **Saturation Primitives:**
-    - `saturate(x, k)` - Basic: x/(x+k)
-    - `saturate_bm25(tf, k1, norm)` - BM25: (tf*(k1+1))/(tf+k1*norm)
-    - `saturate_bm25l(tf, k1, norm, delta)` - BM25L with delta
-    - `saturate_bm25plus(tf, k1, norm, delta)` - BM25+ with bonus
-    - `saturate_log(tf, k1, norm)` - Log-damped: log(1+bm25_sat)
-    
-    **Combination Primitives:**
-    - `multiply(*args)` - Product
-    - `add(*args)` - Sum
-    - `weighted_sum(values, weights)` - Weighted sum
-    - `geometric_mean(values)` - Geometric mean
-    - `harmonic_mean(values)` - Harmonic mean
-    - `soft_max(values, temp)` - Soft maximum
-    
-    **Query/Bonus Primitives:**
-    - `query_weight_uniform(qtf, k3)` - All weight 1
-    - `query_weight_frequency(qtf, k3)` - Weight = qtf
-    - `query_weight_saturated(qtf, k3)` - BM25-style saturation
-    - `coverage_bonus(matched, total)` - Reward coverage
-    - `rarity_boost(idf, threshold)` - Boost rare terms
-    
-    ### 3. TermScorer.score() - How to score a single term
-    Combine primitives to compute one term's contribution.
-    Example: `idf * saturate_log(tf) * rarity_boost(idf)`
-    
-    ### 4. DocumentScorer.score() - How to aggregate term scores
-    Combine term scores into document score.
-    Example: weighted_sum with coverage bonus.
-    
-    ### 5. QueryProcessor.process() - How to handle query terms
-    Choose query weighting strategy.
-    
-    ### 6. score_kernel() - Main orchestration
-    The full scoring pipeline.
+    ### 6. score_kernel(query, doc_idx, corpus)
+    Full pipeline. You can restructure it (e.g. different flow, use DocumentScorer here, or a different orchestration).
     
     ## Guidelines
-    - Use existing primitives when possible
-    - Add new primitives to ScoringPrimitives class if needed
-    - Combine primitives in TermScorer.score() and DocumentScorer.score()
-    - Keep the overall structure (query → term scores → aggregation)
-    - Ensure numerical stability
-    - Look for sections marked "===== EVOLVE ====="
-    - Balance ranking quality (nDCG) with efficiency (index/query time)
-    - Use per-dataset metrics to identify which datasets need improvement
+    - Invent new formulas or new primitives when it might improve retrieval; recombination alone is not the goal.
+    - Keep interface compatibility: BM25(corpus).rank(query) and the Corpus/BM25 API must still work for the evaluator.
+    - Preserve numerical stability (epsilon, safe division).
+    - Use SEARCH/REPLACE diffs; SEARCH must exactly match the current program.
+    - If you add vectorized primitives (e.g. for Corpus.idf_array / norm_array), add a *_vectorized variant in ScoringPrimitives and use it in BM25._score_candidates_vectorized so batch ranking stays consistent with score_kernel.
 
   evaluator_system_message: |
-    You review candidate ranking code using composable primitives.
+    You review candidate lexical retrieval code. Goal: discovery of new IR methods (invent algorithms, not just recombine primitives).
     
     Check for:
-    - Correct use of primitives (right arguments, types)
-    - Numerical stability (no division by zero)
-    - Interface compatibility (BM25.rank() works correctly)
-    - Novel combinations (not just standard BM25)
-    - Any new primitives are well-defined
+    - Correct use of primitives and formulas (arguments, types, numerical stability)
+    - Interface compatibility (BM25.rank(), Corpus API) so the evaluator can run
+    - Whether the change invents new formulas/primitives/structure vs only recombining existing primitives
+    - Any new primitives are well-defined and numerically stable
     
-    The LLM receives per-dataset metrics. Look for:
-    - Datasets where nDCG improved/degraded significantly
-    - Balance between ranking quality and speed
-    - Generalization across different benchmark types
+    Use per-dataset metrics to assess: where nDCG/recall improved or regressed, balance with speed, generalization.
 
   num_top_programs: 3
   num_diverse_programs: 3  # More diversity for exploration
@@ -178,7 +111,7 @@ database:
   log_prompts: true
 
 evaluator:
-  timeout: 3600  # 1 hour - multiple datasets can take time even with parallelism
+  timeout: 1800  # 30 min - fast set (12 datasets) when EVAL_EXCLUDE_DATASETS set
   max_retries: 2
   cascade_evaluation: false
   parallel_evaluations: 1  # Evaluator handles parallelism internally
@@ -187,4 +120,4 @@ evolution_trace:
   enabled: true
   format: "jsonl"
   include_code: true
-  include_prompts: false
+  include_prompts: true
