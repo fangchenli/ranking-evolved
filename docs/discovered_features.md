@@ -263,9 +263,9 @@ $$\text{gate}_{\text{AND}} = \text{gate}_{\text{spec}} \times \text{gate}_{\text
 
 Weight coverage by term importance and TF contribution:
 
-$$\text{info\_cov}(q, d) = \frac{\sum_{t \in q \cap d} \text{IDF}(t) \cdot \text{TF}(t,d)^{\gamma_3}}{\sum_{t \in q} \text{IDF}(t)}$$
+$$\mathrm{InfoCov}(q, d) = \frac{\sum_{t \in q \cap d} \mathrm{IDF}(t) \cdot \mathrm{TF}(t,d)^{\gamma_3}}{\sum_{t \in q} \mathrm{IDF}(t)}$$
 
-$$\text{score} \leftarrow \text{score} \times (1 + \alpha_i \cdot \text{info\_cov}^{\gamma_4})$$
+$$\mathrm{score} \leftarrow \mathrm{score} \times (1 + \alpha_i \cdot \mathrm{InfoCov}^{\gamma_4})$$
 
 Where $\gamma_3 = 0.55$ (info_cov_tf_gamma), $\gamma_4 = 0.75$ (info_cov_gamma), $\alpha_i = 0.10$ (info_cov_alpha).
 
