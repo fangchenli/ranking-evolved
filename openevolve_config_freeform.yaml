@@ -87,11 +87,11 @@ prompt:
 
 database:
   in_memory: true
-  population_size: 300  # Largest population for maximum exploration
-  archive_size: 80
-  num_islands: 5  # Most islands for maximum diversity
-  migration_interval: 30
-  migration_rate: 0.15  # Higher migration for cross-pollination
+  population_size: 100  # Moderate for 130 more iterations
+  archive_size: 40
+  num_islands: 3
+  migration_interval: 20
+  migration_rate: 0.15  # Keep for cross-pollination
   feature_dimensions:
     - "complexity"
     - "diversity"
