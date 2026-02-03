@@ -2960,6 +2960,7 @@ benchmark = [
     { name = "pyserini" },
 ]
 dev = [
+    { name = "matplotlib" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "ruff" },
@@ -2982,6 +2983,7 @@ benchmark = [
     { name = "pyserini", specifier = ">=0.25.0" },
 ]
 dev = [
+    { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "mypy", specifier = ">=1.16.1" },
     { name = "pytest", specifier = ">=8.4.1" },
     { name = "ruff", specifier = ">=0.12.1" },
