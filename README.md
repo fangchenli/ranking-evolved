@@ -687,6 +687,8 @@ uv run python -m openevolve.cli src/ranking_evolved/bm25_classic.py evaluator_be
 
 Prompts, LLM responses, and the evolution database are written to the output directory; see [docs/OPENEVOLVE_RUN_GUIDE.md](docs/OPENEVOLVE_RUN_GUIDE.md) for details.
 
+> **Note:** The `evolution_trace.jsonl` files (which record every LLM prompt/response and are needed to plot optimization curves via `scripts/plot_evolution_metrics.py`) are too large for GitHub (75–104 MB) and are not included in the repository. If you need them, re-run the evolution or contact the authors.
+
 ---
 
 ## OpenEvolve v2 Results (Expanded Evolution Targets)
