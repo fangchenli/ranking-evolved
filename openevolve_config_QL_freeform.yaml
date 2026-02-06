@@ -1,0 +1,113 @@
+# OpenEvolve configuration for Freeform Query Likelihood Seed
+#
+# Seed: src/ranking_evolved/ql_freeform_fast.py (concise: doc repr + query repr + probabilistic scoring)
+#
+# GOAL: Discover a new probabilistic retrieval method. Maximum freedom: document representation,
+# query representation, collection model, and the scoring formula. We want novel formulations with deep,
+# fundamental, and intuitive justification—not just tuning Dirichlet smoothing. GPT-5.2 should be creative
+# and exploratory. Only the evaluator interface is fixed (QL, Corpus, tokenize, LuceneTokenizer,
+# rank(), score()); everything else is evolvable.
+#
+# Run (align with commands.txt):
+#   export EVAL_EXCLUDE_DATASETS="dl19,dl20,fever,..."
+#   uv run python -m openevolve.cli src/ranking_evolved/ql_freeform_fast.py evaluator_ql_parallel.py --config openevolve_config_QL_freeform.yaml --output output/openevolve_output_QL_freeform_fast
+
+max_iterations: 200
+checkpoint_interval: 10
+log_level: "DEBUG"
+random_seed: 42
+diff_based_evolution: true
+max_code_length: 30000
+
+llm:
+  models:
+    - name: "gpt-5.2"
+      weight: 1.0
+  api_base: "https://api.openai.com/v1"
+  api_key: null  # falls back to OPENAI_API_KEY env var
+  temperature: 0.85  # Higher temperature for maximum exploration
+  top_p: 0.95
+  max_tokens: 8192
+  timeout: 180
+  retries: 3
+  retry_delay: 5
+
+prompt:
+  system_message: |
+    You are discovering a **new probabilistic retrieval method** based on Query Likelihood language models. The seed program is a minimal skeleton: document representation, query representation, collection model, and a scoring function. Your job is to propose formulations that are **novel, deep, and intuitively justified**—not just Dirichlet smoothing with extra knobs. Be creative and exploratory.
+
+    ## Goal
+
+    - **Optimize**: per-dataset recall@100, nDCG@10, and a combined_score = 0.8 × avg_recall@100 + 0.2 × avg_ndcg@10 (higher is better).
+    - **Design**: Invent or refine the probabilistic model with clear, fundamental reasoning (e.g. information-theoretic, probabilistic, or geometric). We want ideas that could plausibly generalize and that have a coherent story, not ad-hoc constants.
+
+    ## What you can change (evolve)
+
+    1. **Config** — μ (smoothing parameter), epsilon, and any new parameters you need.
+    2. **collection_probability(term, ...)** — How to compute P(w | C) (collection language model). EVOLVE: try other collection models (e.g., weighted by document importance, IDF-based, hierarchical, etc.).
+    3. **DocumentRepr** — What we store per document (e.g. term freqs, length; you can add positions, fields, etc.). Evolve `from_tokens` and any new fields.
+    4. **QueryRepr** — How the query is represented (terms, weights; you can add expansion, dedup, weighting). Evolve `from_tokens`.
+    5. **retrieval_score(...)** — **The core retrieval method.** This function scores one document for one query. EVOLVE: design a formula with a clear, intuitive justification. Default: Dirichlet smoothing. Try other smoothing methods (Jelinek-Mercer, absolute discounting), document priors, query models, multi-field models, term dependencies, etc. You can use multiple sub-signals and combine them, or a single unified formula.
+    6. **score_document(query, doc_idx, corpus)** — Top-level entry; you can change the pipeline (e.g. different reprs, preprocessing) as long as the final score is returned.
+    7. **QL._score_candidates_vectorized** — Used by rank() for speed. If you change the scoring formula, keep this in sync with retrieval_score so rank() remains correct and fast (or document that you accept a slower path).
+
+    Use **SEARCH/REPLACE** diffs: SEARCH must exactly match the current code; REPLACE is your edit.
+
+    Use **per-dataset metrics** to see where the method is weak and target those benchmarks.
+
+    ## What you must keep (evaluator contract)
+
+    - The module must expose: **QL**, **Corpus**, **tokenize**, **LuceneTokenizer**.
+    - **QL** must have **rank(query, top_k=None)** returning (indices, scores) and **score(query, index)** returning a float.
+    - **Corpus** is constructed with (documents, ids); the evaluator uses it and QL.rank() / QL.score(). Do not remove or rename these public APIs.
+    - Avoid division by zero and NaNs (use Config.epsilon or similar).
+    - Avoid taking log(0) (use max(value, epsilon) before log).
+
+    ## Guidelines
+
+    - Prefer one or a few coherent ideas per edit rather than many unrelated tweaks.
+    - Explain in comments or structure *why* a formulation is reasonable (e.g. "smoothing prevents zero probabilities" or "collection model favors discriminative terms").
+    - If you add new parameters or signals, give them meaningful names and clear roles.
+    - Novel formulations (e.g. different smoothing methods, document priors, query expansion, term dependencies) are encouraged; stay within lexical retrieval (no external APIs or learned weights that require training data).
+    - Probabilistic, information-theoretic, and language modeling principles are good foundations.
+
+  evaluator_system_message: |
+    You review candidate Query Likelihood code evaluated on IR benchmarks.
+
+    Check:
+    - Code runs without errors and returns valid scores (no NaN, not all zeros).
+    - **Interface**: QL, Corpus, tokenize, LuceneTokenizer present; QL has rank() and score().
+    - Numerical stability (no division by zero, no log(0), bounded outputs).
+    - Novel formulations are conceptually sensible (e.g. probabilistic models with clear justification).
+
+    Be **tolerant of unconventional approaches**—we want creative, well-reasoned probabilistic retrieval methods, not only small Dirichlet variants. Prefer approving edits that have a clear intuitive or theoretical basis; flag only obvious bugs or interface violations.
+
+  num_top_programs: 4  # Keep more top programs for diversity
+  num_diverse_programs: 4  # Maximum diversity for exploration
+  use_template_stochasticity: true
+  include_artifacts: true
+
+database:
+  in_memory: true
+  population_size: 100  # Moderate for 130 more iterations
+  archive_size: 40
+  num_islands: 3
+  migration_interval: 20
+  migration_rate: 0.15  # Keep for cross-pollination
+  feature_dimensions:
+    - "complexity"
+    - "diversity"
+  feature_bins: 12
+  log_prompts: true
+
+evaluator:
+  timeout: 1800  # 30 min - fast set (12 datasets) when EVAL_EXCLUDE_DATASETS set
+  max_retries: 3  # More retries since code may be less stable
+  cascade_evaluation: false
+  parallel_evaluations: 1  # Evaluator handles parallelism internally
+
+evolution_trace:
+  enabled: true
+  format: "jsonl"
+  include_code: true
+  include_prompts: true

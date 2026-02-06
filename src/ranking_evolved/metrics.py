@@ -100,10 +100,13 @@ def ndcg_at_k(relevant: np.ndarray, retrieved: np.ndarray, k: int) -> float:
     """
     retrieved_at_k = retrieved[:k]
     gains = [1 if doc in relevant else 0 for doc in retrieved_at_k]
-    discounts = [np.log2(i + 2) for i in range(len(gains))]  # i + 2 because log2(1+1)=1 for i=0
+    # Pad gains to length k if fewer documents were retrieved
+    gains = gains + [0] * (k - len(gains))
+    # Always compute discounts for k positions
+    discounts = [np.log2(i + 2) for i in range(k)]  # i + 2 because log2(1+1)=1 for i=0
     dcg = np.sum(np.array(gains) / np.array(discounts))
 
-    # Compute ideal DCG
+    # Compute ideal DCG (uses same discounts array)
     ideal_gains = sorted(
         [1] * min(len(relevant), k) + [0] * (k - min(len(relevant), k)), reverse=True
     )

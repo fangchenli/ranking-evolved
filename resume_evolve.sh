@@ -1,25 +1,30 @@
 #!/bin/bash
-# Resume an OpenEvolve run from the latest checkpoint
+# Resume an OpenEvolve run from a checkpoint
 #
 # Usage:
-#   ./resume_evolve.sh <run_dir> [config_file]
+#   ./resume_evolve.sh <run_dir> [config_file] [checkpoint_name]
 #
 # Before resuming: set max_iterations in the config to REMAINING steps (not total).
 #   e.g. after 70 steps, to reach 200 total set max_iterations: 130 in the YAML.
 #
-# Example:
+# Examples:
+#   ./resume_evolve.sh output/openevolve_output_freeform_fast/20260202_075458 openevolve_config_freeform.yaml
+#   ./resume_evolve.sh output/openevolve_output_freeform_fast/20260202_075458 openevolve_config_freeform.yaml checkpoint_70
 #   ./resume_evolve.sh output/openevolve_output_constrained_fast/20260201_184826 openevolve_config_constrained.yaml
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <run_dir> [config_file]"
+    echo "Usage: $0 <run_dir> [config_file] [checkpoint_name]"
     echo ""
-    echo "Example:"
-    echo "  $0 output/openevolve_output_constrained_fast/20260201_184826 openevolve_config_constrained.yaml"
+    echo "  checkpoint_name: e.g. checkpoint_70 (default: latest checkpoint)"
+    echo ""
+    echo "Example (resume freeform from step 70):"
+    echo "  $0 output/openevolve_output_freeform_fast/20260202_075458 openevolve_config_freeform.yaml checkpoint_70"
     exit 1
 fi
 
 RUN_DIR="$1"
-CONFIG_FILE="${2:-openevolve_config_constrained.yaml}"
+CONFIG_FILE="${2:-openevolve_config_freeform.yaml}"
+CHECKPOINT_NAME="$3"
 
 if [ ! -d "$RUN_DIR" ]; then
     echo "Error: Run directory not found: $RUN_DIR"
@@ -32,15 +37,22 @@ if [ ! -d "$CHECKPOINT_DIR" ]; then
     exit 1
 fi
 
-# Find latest checkpoint
-LATEST_CHECKPOINT=$(ls -t "$CHECKPOINT_DIR" 2>/dev/null | grep "^checkpoint_" | head -1)
-
-if [ -z "$LATEST_CHECKPOINT" ]; then
-    echo "Error: No checkpoint found in $CHECKPOINT_DIR"
-    exit 1
+# Use specified checkpoint or latest
+if [ -n "$CHECKPOINT_NAME" ]; then
+    if [ ! -d "$CHECKPOINT_DIR/$CHECKPOINT_NAME" ]; then
+        echo "Error: Checkpoint not found: $CHECKPOINT_DIR/$CHECKPOINT_NAME"
+        exit 1
+    fi
+    CHOSEN_CHECKPOINT="$CHECKPOINT_NAME"
+else
+    CHOSEN_CHECKPOINT=$(ls -t "$CHECKPOINT_DIR" 2>/dev/null | grep "^checkpoint_" | head -1)
+    if [ -z "$CHOSEN_CHECKPOINT" ]; then
+        echo "Error: No checkpoint found in $CHECKPOINT_DIR"
+        exit 1
+    fi
 fi
 
-CHECKPOINT_PATH="$CHECKPOINT_DIR/$LATEST_CHECKPOINT"
+CHECKPOINT_PATH="$CHECKPOINT_DIR/$CHOSEN_CHECKPOINT"
 echo "Resuming from: $CHECKPOINT_PATH"
 echo "Output directory: $RUN_DIR"
 echo "Config: $CONFIG_FILE"

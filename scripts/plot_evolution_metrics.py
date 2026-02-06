@@ -111,6 +111,9 @@ def main() -> None:
     avg_recall = [avg_metric(m, datasets, "recall@100") for m in best_metrics_per_step]
     avg_ndcg = [avg_metric(m, datasets, "ndcg@10") for m in best_metrics_per_step]
 
+    is_ql = "QL" in str(args.output_dir)
+    seed_label = "Pyserini LMDirichlet" if is_ql else "Pyserini BM25"
+
     seed = best_metrics_per_step[0]
     seed_recall = avg_metric(seed, datasets, "recall@100")
     seed_ndcg = avg_metric(seed, datasets, "ndcg@10")
@@ -122,7 +125,7 @@ def main() -> None:
         [seed_recall] * len(steps),
         linestyle=":",
         color="red",
-        label="Classic BM25",
+        label=seed_label,
     )
 
     ax_r.set_title("Average Recall@100")
@@ -138,7 +141,7 @@ def main() -> None:
         [seed_ndcg] * len(steps),
         linestyle=":",
         color="red",
-        label="Classic BM25",
+        label=seed_label,
     )
 
     ax_n.set_title("Average nDCG@10")

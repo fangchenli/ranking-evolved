@@ -20,3 +20,11 @@ uv run python -m openevolve.cli src/ranking_evolved/bm25_freeform_fast.py evalua
 # Use --checkpoint <path-to-checkpoint-dir> and --output <same-run-dir> (so new checkpoints go to the same run).
 # Example: continue from checkpoint_10 in a previous constrained run
 # uv run python -m openevolve.cli src/ranking_evolved/bm25_constrained_fast.py evaluator_parallel.py --config openevolve_config_constrained.yaml --output output/openevolve_output_constrained_fast/20260201_184826 --checkpoint output/openevolve_output_constrained_fast/20260201_184826/checkpoints/checkpoint_10
+
+
+Turn on the UI: 
+./scripts/run_visualizer.sh output/openevolve_output_freeform_fast/20260202_075458
+./scripts/run_visualizer.sh output/openevolve_output_QL_freeform_fast/20260205_183744
+
+Generate training plot
+uv run python scripts/plot_evolution_metrics.py "output/openevolve_output_QL_freeform_fast/20260205_183744" --save "output/openevolve_output_QL_freeform_fast/20260205_183744/evolution_metrics.png" --no-show
