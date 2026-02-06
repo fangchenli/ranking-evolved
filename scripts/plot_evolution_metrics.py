@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-Plot per-dataset nDCG@10 and Recall@100 across evolution steps.
+Plot average Recall@100 and nDCG@10 across evolution steps (best-so-far).
 
-Reads evolution_trace.jsonl from an OpenEvolve run and plots:
-- X-axis: step (0 = seed, 1..N = iterations)
-- Y-axis: metric value
-- One line per dataset; "best-so-far" at each step (by combined_score).
+Creates TWO side-by-side graphs:
+- Left: Avg Recall@100
+- Right: Avg nDCG@10
 
-Usage:
-  uv run python scripts/plot_evolution_metrics.py OUTPUT_DIR [--save FIGURE_PATH]
-  e.g. uv run python scripts/plot_evolution_metrics.py output/openevolve_output_freeform_fast/20260201_215150 --save evolution_metrics.png
+Each graph includes:
+- Solid line = evolved ranker (best-so-far average)
+- Red dotted line = classic BM25 (seed)
+
+Clean, paper-friendly layout.
 """
 
 from __future__ import annotations
@@ -24,44 +25,34 @@ def load_trace(path: Path) -> list[dict]:
     with open(path) as f:
         for line in f:
             line = line.strip()
-            if not line:
-                continue
-            records.append(json.loads(line))
+            if line:
+                records.append(json.loads(line))
     return records
 
 
 def best_so_far_series(records: list[dict]) -> tuple[list[int], list[dict]]:
-    """
-    For each step t, return the metrics of the best program so far (by combined_score).
-    Step 0 = seed (first record's parent_metrics); steps 1..N = best among seed and all children.
-    Returns (steps, list of metric dicts per step).
-    """
-    if not records:
-        return [], []
-
     steps = [0]
     seed_metrics = records[0]["parent_metrics"]
-    seed_score = seed_metrics.get("combined_score", 0.0)
-    best_scores = [seed_score]
-    best_metrics_per_step = [seed_metrics]
+    best_score = float(seed_metrics.get("combined_score", 0.0))
+    best_metrics = seed_metrics
+    best_metrics_per_step = [best_metrics]
 
     for r in records:
-        child_metrics = r.get("child_metrics", {})
-        child_score = child_metrics.get("combined_score", 0.0)
-        steps.append(r["iteration"])
-        if child_score >= best_scores[-1]:
-            best_scores.append(child_score)
-            best_metrics_per_step.append(child_metrics)
-        else:
-            best_scores.append(best_scores[-1])
-            best_metrics_per_step.append(best_metrics_per_step[-1])
+        steps.append(int(r["iteration"]))
+        child_metrics = r.get("child_metrics", {}) or {}
+        child_score = float(child_metrics.get("combined_score", 0.0))
+
+        if child_score >= best_score:
+            best_score = child_score
+            best_metrics = child_metrics
+
+        best_metrics_per_step.append(best_metrics)
 
     return steps, best_metrics_per_step
 
 
 def dataset_names_from_metrics(metrics: dict) -> list[str]:
-    """Extract dataset names from keys like beir_nfcorpus_ndcg@10, bright_pony_recall@100."""
-    seen: set[str] = set()
+    seen = set()
     for k in metrics:
         if k.endswith("_ndcg@10") and k != "avg_ndcg@10":
             seen.add(k.replace("_ndcg@10", ""))
@@ -70,11 +61,17 @@ def dataset_names_from_metrics(metrics: dict) -> list[str]:
     return sorted(seen)
 
 
+def avg_metric(m: dict, datasets: list[str], suffix: str) -> float:
+    vals = [float(m.get(f"{ds}_{suffix}", 0.0)) for ds in datasets]
+    return sum(vals) / len(vals) if vals else 0.0
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Plot nDCG@10 and Recall@100 per dataset across steps")
-    parser.add_argument("output_dir", type=Path, help="OpenEvolve run dir containing evolution_trace.jsonl")
-    parser.add_argument("--save", type=Path, default=None, help="Save figure to this path")
-    parser.add_argument("--no-show", action="store_true", help="Do not show interactive plot (only save)")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("output_dir", type=Path)
+    parser.add_argument("--save", type=Path, default=None)
+    parser.add_argument("--no-show", action="store_true")
+    parser.add_argument("--figsize", type=str, default="7.0,3.0")
     args = parser.parse_args()
 
     trace_path = args.output_dir / "evolution_trace.jsonl"
@@ -84,7 +81,7 @@ def main() -> None:
     try:
         import matplotlib.pyplot as plt  # type: ignore
     except ImportError:
-        raise SystemExit("matplotlib is required. Install with: uv add --dev matplotlib")
+        raise SystemExit("matplotlib is required.")
 
     records = load_trace(trace_path)
     if not records:
@@ -92,37 +89,69 @@ def main() -> None:
 
     steps, best_metrics_per_step = best_so_far_series(records)
     datasets = dataset_names_from_metrics(best_metrics_per_step[0])
-    if not datasets:
-        raise SystemExit("No per-dataset metrics found in trace.")
 
-    ndcg_key = lambda d: f"{d}_ndcg@10"
-    recall_key = lambda d: f"{d}_recall@100"
+    w, h = (float(x.strip()) for x in args.figsize.split(","))
+    plt.rcParams.update(
+        {
+            "font.size": 9,
+            "axes.titlesize": 10,
+            "axes.labelsize": 9,
+            "legend.fontsize": 8,
+            "xtick.labelsize": 8,
+            "ytick.labelsize": 8,
+            "lines.linewidth": 2.2,
+            "axes.linewidth": 0.8,
+            "pdf.fonttype": 42,
+        }
+    )
 
-    fig, (ax_ndcg, ax_recall) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    fig, (ax_r, ax_n) = plt.subplots(1, 2, figsize=(w, h), sharex=True)
 
-    for ds in datasets:
-        nk = ndcg_key(ds)
-        rk = recall_key(ds)
-        ndcg_vals = [m.get(nk, 0.0) for m in best_metrics_per_step]
-        recall_vals = [m.get(rk, 0.0) for m in best_metrics_per_step]
-        ax_ndcg.plot(steps, ndcg_vals, label=ds, alpha=0.8)
-        ax_recall.plot(steps, recall_vals, label=ds, alpha=0.8)
+    # averages
+    avg_recall = [avg_metric(m, datasets, "recall@100") for m in best_metrics_per_step]
+    avg_ndcg = [avg_metric(m, datasets, "ndcg@10") for m in best_metrics_per_step]
 
-    ax_ndcg.set_ylabel("nDCG@10")
-    ax_ndcg.set_title("Best-so-far nDCG@10 per dataset")
-    ax_ndcg.legend(loc="center left", bbox_to_anchor=(1, 0.5), fontsize=7)
-    ax_ndcg.grid(True, alpha=0.3)
+    seed = best_metrics_per_step[0]
+    seed_recall = avg_metric(seed, datasets, "recall@100")
+    seed_ndcg = avg_metric(seed, datasets, "ndcg@10")
 
-    ax_recall.set_ylabel("Recall@100")
-    ax_recall.set_xlabel("Step (0 = seed)")
-    ax_recall.set_title("Best-so-far Recall@100 per dataset")
-    ax_recall.legend(loc="center left", bbox_to_anchor=(1, 0.5), fontsize=7)
-    ax_recall.grid(True, alpha=0.3)
+    # Recall plot
+    ax_r.plot(steps, avg_recall, label="Avg Recall@100")
+    ax_r.plot(
+        steps,
+        [seed_recall] * len(steps),
+        linestyle=":",
+        color="red",
+        label="Classic BM25",
+    )
 
-    plt.tight_layout()
+    ax_r.set_title("Average Recall@100")
+    ax_r.set_xlabel("Step")
+    ax_r.set_ylabel("Recall@100")
+    ax_r.grid(True, alpha=0.25)
+    ax_r.legend(frameon=False)
+
+    # nDCG plot
+    ax_n.plot(steps, avg_ndcg, label="Avg nDCG@10")
+    ax_n.plot(
+        steps,
+        [seed_ndcg] * len(steps),
+        linestyle=":",
+        color="red",
+        label="Classic BM25",
+    )
+
+    ax_n.set_title("Average nDCG@10")
+    ax_n.set_xlabel("Step")
+    ax_n.set_ylabel("nDCG@10")
+    ax_n.grid(True, alpha=0.25)
+    ax_n.legend(frameon=False)
+
+    fig.tight_layout(pad=0.5, w_pad=1.0)
 
     if args.save:
-        fig.savefig(args.save, dpi=150, bbox_inches="tight")
+        args.save.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(args.save, dpi=250)
         print(f"Saved: {args.save}")
 
     if not args.no_show:

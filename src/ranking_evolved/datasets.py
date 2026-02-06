@@ -238,7 +238,60 @@ class BEIRLoader:
             url = f"https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{dataset_name}.zip"
             util.download_and_unzip(url, self.data_dir)
 
-        # Load using BEIR loader
+        # CQADupstack: 12 sub-forums (gaming, tex, android, ...), each with corpus.jsonl, queries.jsonl, qrels/
+        if dataset_name == "cqadupstack" and data_path.is_dir():
+            subdirs = [
+                d
+                for d in sorted(data_path.iterdir())
+                if d.is_dir() and (d / "corpus.jsonl").is_file()
+            ]
+            if subdirs:
+                corpus_ids = []
+                corpus = []
+                query_ids = []
+                queries = []
+                qrels: dict[str, dict[str, int]] = {}
+                for subdir in subdirs:
+                    prefix = subdir.name
+                    try:
+                        c_dict, q_dict, qrel_dict = GenericDataLoader(str(subdir)).load(split="test")
+                    except Exception as e:
+                        import warnings
+                        warnings.warn(
+                            f"beir cqadupstack: skip subforum '{prefix}' ({subdir}): {e}",
+                            UserWarning,
+                            stacklevel=2,
+                        )
+                        continue
+                    for doc_id, doc in c_dict.items():
+                        pid = f"{prefix}_{doc_id}"
+                        corpus_ids.append(pid)
+                        title = doc.get("title", "") or ""
+                        text = doc.get("text", "") or ""
+                        combined = f"{title} {text}".strip() if title else text
+                        corpus.append(combined)
+                    for qid in qrel_dict:
+                        q_key = f"{prefix}_{qid}"
+                        query_ids.append(q_key)
+                        queries.append(q_dict[qid])
+                        qrels[q_key] = {
+                            f"{prefix}_{doc_id}": score
+                            for doc_id, score in qrel_dict[qid].items()
+                        }
+                dataset = EvalDataset(
+                    name=f"beir_{dataset_name}",
+                    benchmark="beir",
+                    corpus=corpus,
+                    corpus_ids=corpus_ids,
+                    queries=queries,
+                    query_ids=query_ids,
+                    qrels=qrels,
+                )
+                self._cache[dataset_name] = dataset
+                return dataset
+            # fallthrough: no subdirs with corpus.jsonl, try top-level
+
+        # Single-folder BEIR layout (or flat cqadupstack)
         corpus_dict, queries_dict, qrels = GenericDataLoader(str(data_path)).load(split="test")
 
         # Convert to lists
