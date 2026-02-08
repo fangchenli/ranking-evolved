@@ -246,6 +246,52 @@ def tokenize_batch(
 
 
 # =============================================================================
+# Java/Pyserini Helpers
+# =============================================================================
+
+
+def _ensure_java_home() -> None:
+    """Set JAVA_HOME if not already set, auto-detecting by platform."""
+    import platform
+    import shutil
+    import subprocess
+
+    if "JAVA_HOME" in os.environ:
+        return
+
+    if platform.system() == "Darwin":
+        # macOS: try brew openjdk@21, then /usr/libexec/java_home
+        brew_path = shutil.which("brew")
+        if brew_path:
+            try:
+                prefix = subprocess.check_output(
+                    [brew_path, "--prefix", "openjdk@21"],
+                    text=True, stderr=subprocess.DEVNULL,
+                ).strip()
+                java_home = f"{prefix}/libexec/openjdk.jdk/Contents/Home"
+                if os.path.isdir(java_home):
+                    os.environ["JAVA_HOME"] = java_home
+                    return
+            except subprocess.CalledProcessError:
+                pass
+        try:
+            java_home = subprocess.check_output(
+                ["/usr/libexec/java_home", "-v", "21"],
+                text=True, stderr=subprocess.DEVNULL,
+            ).strip()
+            if os.path.isdir(java_home):
+                os.environ["JAVA_HOME"] = java_home
+                return
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+    else:
+        # Linux default
+        linux_default = "/usr/lib/jvm/java-21-openjdk-amd64"
+        if os.path.isdir(linux_default):
+            os.environ["JAVA_HOME"] = linux_default
+
+
+# =============================================================================
 # Pyserini Official Baseline Evaluation
 # =============================================================================
 
@@ -282,9 +328,8 @@ def evaluate_pyserini_official(
     from pathlib import Path
     
     # Set JAVA_HOME if not set
-    if "JAVA_HOME" not in os.environ:
-        os.environ["JAVA_HOME"] = "/usr/lib/jvm/java-21-openjdk-amd64"
-    
+    _ensure_java_home()
+
     full_name = f"{benchmark}_{dataset_name}"
     
     # Top-K for retrieval - 1000 is more than enough for Recall@100 and nDCG@10
@@ -481,9 +526,8 @@ def evaluate_pyserini_trec_dl_combined(
     from pathlib import Path
     
     # Set JAVA_HOME if not set
-    if "JAVA_HOME" not in os.environ:
-        os.environ["JAVA_HOME"] = "/usr/lib/jvm/java-21-openjdk-amd64"
-    
+    _ensure_java_home()
+
     RETRIEVAL_K = 1000
     num_threads = min(os.cpu_count() or 8, 64)
     
