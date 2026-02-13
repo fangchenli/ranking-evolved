@@ -11,6 +11,7 @@ Evaluator contract: BM25, Corpus, tokenize, LuceneTokenizer; BM25.rank(), BM25.s
 from __future__ import annotations
 
 import os
+import threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
@@ -23,7 +24,7 @@ from ranking_evolved.bm25 import LuceneTokenizer as _BaseLuceneTokenizer
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
-NUM_QUERY_WORKERS = min(int(os.environ.get("BM25_QUERY_WORKERS", 32)), 32)
+NUM_QUERY_WORKERS = min(int(os.environ.get("BM25_QUERY_WORKERS", 32)), 64)
 MIN_QUERIES_FOR_PARALLEL = 10
 
 
@@ -97,11 +98,14 @@ def query_weights(
 # -----------------------------------------------------------------------------
 
 _TOKENIZER: _BaseLuceneTokenizer | None = None
+_TOKENIZER_LOCK = threading.Lock()
 
 def _get_tokenizer() -> _BaseLuceneTokenizer:
     global _TOKENIZER
     if _TOKENIZER is None:
-        _TOKENIZER = _BaseLuceneTokenizer()
+        with _TOKENIZER_LOCK:
+            if _TOKENIZER is None:
+                _TOKENIZER = _BaseLuceneTokenizer()
     return _TOKENIZER
 
 def tokenize(text: str) -> list[str]:
@@ -120,7 +124,7 @@ class LuceneTokenizer:
 
 class Corpus:
     def __init__(self, documents: list[list[str]], ids: list[str] | None = None):
-        self.documents = documents
+        # MEMORY OPTIMIZATION: Don't store documents - only needed during construction
         self.ids = ids or [str(i) for i in range(len(documents))]
         self._id_to_idx = {doc_id: i for i, doc_id in enumerate(self.ids)}
         self.N = len(documents)
@@ -277,10 +281,21 @@ class BM25:
         if not term_ids:
             return np.arange(self.corpus.N, dtype=np.int64), np.zeros(self.corpus.N, dtype=np.float64)
         w_arr = np.array(w_arr, dtype=np.float64)
-        candidate_set: set[int] = set()
+
+        # For large corpora, use NumPy operations instead of Python sets to avoid memory overhead
+        posting_lists = []
         for tid in term_ids:
-            candidate_set.update(self.corpus.get_posting_list_by_id(tid).tolist())
-        candidate_docs = np.array(sorted(candidate_set), dtype=np.int64)
+            pl = self.corpus.get_posting_list_by_id(tid)
+            if len(pl) > 0:
+                posting_lists.append(pl)
+
+        if not posting_lists:
+            candidate_docs = np.array([], dtype=np.int64)
+        elif len(posting_lists) == 1:
+            candidate_docs = posting_lists[0]  # Already sorted in posting list
+        else:
+            # np.unique sorts and deduplicates - more memory efficient than Python set for large arrays
+            candidate_docs = np.unique(np.concatenate(posting_lists))
         cand_scores = self._score_candidates_vectorized(term_ids, candidate_docs, w_arr)
         all_scores = np.zeros(self.corpus.N, dtype=np.float64)
         all_scores[candidate_docs] = cand_scores

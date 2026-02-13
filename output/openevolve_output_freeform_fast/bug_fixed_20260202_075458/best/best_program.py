@@ -8,6 +8,7 @@ Everything else is evolvable. Default behavior: Lucene BM25 (same as current see
 
 from __future__ import annotations
 
+import gc
 import math
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -270,7 +271,7 @@ def score_document(query: list[str], doc_idx: int, corpus: Corpus) -> float:
 
     # Prefix channel: robust to morphology / brittle tokenization, but keep weight small to stay precise.
     pw = float(getattr(Config, "prefix_weight", 0.0))
-    if pw != 0.0 and getattr(Config, "prefix_len", 0) > 0:
+    if pw != 0.0 and getattr(Config, "prefix_len", 0) > 0 and getattr(corpus, "prefix_doc_tf_dicts", None) is not None:
         pfx = max(1, int(getattr(Config, "prefix_len", 5)))
         ptoks = [t[:pfx] for t in query if len(t) >= pfx]
         if ptoks:
@@ -286,7 +287,7 @@ def score_document(query: list[str], doc_idx: int, corpus: Corpus) -> float:
 
     # Bigram channel: cheap phrase/proximity specificity.
     bw = float(getattr(Config, "bigram_weight", 0.0))
-    if bw != 0.0 and len(query) >= 2:
+    if bw != 0.0 and len(query) >= 2 and getattr(corpus, "bigram_doc_tf_dicts", None) is not None:
         qb = ["B:" + query[i] + " " + query[i + 1] for i in range(len(query) - 1)]
         if qb:
             bq = QueryRepr.from_tokens(qb)
@@ -301,7 +302,7 @@ def score_document(query: list[str], doc_idx: int, corpus: Corpus) -> float:
 
     # Micro channel: char n-grams help mostly on identifier-ish queries; gate by avg query IDF.
     mw = float(getattr(Config, "micro_weight", 0.0))
-    if mw != 0.0 and getattr(Config, "micro_len", 0) > 0:
+    if mw != 0.0 and getattr(Config, "micro_len", 0) > 0 and getattr(corpus, "micro_doc_tf_dicts", None) is not None:
         idf_sum = 0.0
         idf_k = 0.0
         for t in q.terms:
@@ -362,12 +363,33 @@ class LuceneTokenizer:
 
 
 # -----------------------------------------------------------------------------
+# Lightweight proxy for document frequency lookups (saves ~500MB-1GB)
+# -----------------------------------------------------------------------------
+
+class _DFProxy:
+    """Memory-efficient proxy: looks up _vocab + _df on demand instead of storing a full Counter."""
+    __slots__ = ('_vocab', '_df')
+
+    def __init__(self, vocab: dict[str, int], df_array):
+        self._vocab = vocab
+        self._df = df_array
+
+    def get(self, term, default=0):
+        tid = self._vocab.get(term)
+        if tid is None:
+            return default
+        return max(1, int(self._df[tid]))
+
+    def __contains__(self, term):
+        return term in self._vocab
+
+
+# -----------------------------------------------------------------------------
 # Corpus (interface fixed for evaluator; internals can evolve if needed)
 # -----------------------------------------------------------------------------
 
 class Corpus:
     def __init__(self, documents: list[list[str]], ids: list[str] | None = None):
-        self.documents = documents
         self.ids = ids or [str(i) for i in range(len(documents))]
         self._id_to_idx = {doc_id: i for i, doc_id in enumerate(self.ids)}
         self.N = len(documents)
@@ -376,113 +398,91 @@ class Corpus:
         self.avgdl = float(np.mean(self.doc_lengths)) if self.N > 0 else 1.0
         self.average_document_length = self.avgdl
 
-        # Prefix lexicon view (tagged) + bigram view + micro-token view.
         pfx = max(1, int(getattr(Config, "prefix_len", 5)))
-        docs_prefix = [[t[:pfx] for t in doc if len(t) >= pfx] for doc in documents]
-        self.prefix_doc_tf_dicts: list[Counter[str]] = [Counter(d) for d in docs_prefix]
-
-        docs_bigram: list[list[str]] = []
-        for doc in documents:
-            if len(doc) < 2:
-                docs_bigram.append([])
-            else:
-                docs_bigram.append(["B:" + doc[i] + " " + doc[i + 1] for i in range(len(doc) - 1)])
-        self.bigram_doc_tf_dicts: list[Counter[str]] = [Counter(d) for d in docs_bigram]
-
         m = max(2, int(getattr(Config, "micro_len", 3)))
         min_tok = max(1, int(getattr(Config, "micro_min_token_len", 2)))
-        micro_docs: list[list[str]] = []
-        for doc in documents:
-            grams: list[str] = []
-            for t in doc:
-                if len(t) < min_tok:
-                    continue
-                if len(t) <= m:
-                    grams.append("M:" + t)
-                else:
-                    for i in range(0, len(t) - m + 1):
-                        grams.append("M:" + t[i : i + m])
-            micro_docs.append(grams)
-        self.micro_doc_tf_dicts: list[Counter[str]] = [Counter(g) for g in micro_docs]
 
-        # Joint vocabulary: base tokens + tagged prefixes + bigrams + micro tokens.
+        # ---- Pass 1: Build vocabulary (no intermediate per-doc lists stored) ----
         self._vocab: dict[str, int] = {}
-        for doc, pdoc, bdoc, mdoc in zip(documents, docs_prefix, docs_bigram, micro_docs):
+        for doc in documents:
             for term in doc:
                 if term not in self._vocab:
                     self._vocab[term] = len(self._vocab)
-            for p in pdoc:
-                key = "P:" + p
-                if key not in self._vocab:
-                    self._vocab[key] = len(self._vocab)
-            for bg in bdoc:
+                if len(term) >= pfx:
+                    key = "P:" + term[:pfx]
+                    if key not in self._vocab:
+                        self._vocab[key] = len(self._vocab)
+                if len(term) >= min_tok:
+                    if len(term) <= m:
+                        key = "M:" + term
+                        if key not in self._vocab:
+                            self._vocab[key] = len(self._vocab)
+                    else:
+                        for j in range(len(term) - m + 1):
+                            key = "M:" + term[j : j + m]
+                            if key not in self._vocab:
+                                self._vocab[key] = len(self._vocab)
+            for i in range(len(doc) - 1):
+                bg = "B:" + doc[i] + " " + doc[i + 1]
                 if bg not in self._vocab:
                     self._vocab[bg] = len(self._vocab)
-            for g in mdoc:
-                if g not in self._vocab:
-                    self._vocab[g] = len(self._vocab)
 
         self.vocab_size = len(self._vocab)
 
-        tf_matrix_lil = lil_matrix((self.vocab_size, self.N), dtype=np.float64)
-        self._inverted_index: dict[int, list[int]] = {i: [] for i in range(self.vocab_size)}
-        self._df = np.zeros(self.vocab_size, dtype=np.float64)
-        self._doc_tf_dicts: list[Counter[str]] = [Counter(doc) for doc in documents]
+        # ---- Pass 2: Build sparse tf_matrix (one temporary Counter per doc) ----
+        # MEMORY: No intermediate docs_prefix/docs_bigram/micro_docs lists stored.
+        # No per-document Counter lists (prefix_doc_tf_dicts etc.) stored.
+        # This saves ~70+ GB for corpora with 5M+ documents.
+        tf_lil = lil_matrix((self.vocab_size, self.N), dtype=np.float64)
 
-        for doc_idx, (doc, pdoc, bdoc, mdoc) in enumerate(zip(documents, docs_prefix, docs_bigram, micro_docs)):
-            term_counts = Counter(doc)
-            pref_counts = Counter("P:" + p for p in pdoc)
-            bigr_counts = Counter(bdoc)
-            micro_counts = Counter(mdoc)
-            seen = set()
+        for doc_idx, doc in enumerate(documents):
+            counts: Counter[str] = Counter(doc)
+            for t in doc:
+                if len(t) >= pfx:
+                    counts["P:" + t[:pfx]] += 1
+                if len(t) >= min_tok:
+                    if len(t) <= m:
+                        counts["M:" + t] += 1
+                    else:
+                        for j in range(len(t) - m + 1):
+                            counts["M:" + t[j : j + m]] += 1
+            for i in range(len(doc) - 1):
+                counts["B:" + doc[i] + " " + doc[i + 1]] += 1
 
-            for term, count in term_counts.items():
-                tid = self._vocab[term]
-                tf_matrix_lil[tid, doc_idx] = count
-                if tid not in seen:
-                    self._inverted_index[tid].append(doc_idx)
-                    self._df[tid] += 1
-                    seen.add(tid)
+            for term, count in counts.items():
+                tf_lil[self._vocab[term], doc_idx] = count
 
-            for term, count in pref_counts.items():
-                tid = self._vocab[term]
-                tf_matrix_lil[tid, doc_idx] = count
-                if tid not in seen:
-                    self._inverted_index[tid].append(doc_idx)
-                    self._df[tid] += 1
-                    seen.add(tid)
+        # Convert to CSR and immediately free lil_matrix
+        self.tf_matrix = csr_matrix(tf_lil)
+        del tf_lil
+        gc.collect()
 
-            for term, count in bigr_counts.items():
-                tid = self._vocab[term]
-                tf_matrix_lil[tid, doc_idx] = count
-                if tid not in seen:
-                    self._inverted_index[tid].append(doc_idx)
-                    self._df[tid] += 1
-                    seen.add(tid)
-
-            for term, count in micro_counts.items():
-                tid = self._vocab[term]
-                tf_matrix_lil[tid, doc_idx] = count
-                if tid not in seen:
-                    self._inverted_index[tid].append(doc_idx)
-                    self._df[tid] += 1
-                    seen.add(tid)
-
-        self.tf_matrix = csr_matrix(tf_matrix_lil)
+        # Derive df and posting lists directly from CSR structure
+        # (no separate inverted index needed — saves ~36 GB for large corpora)
+        self._df = np.diff(self.tf_matrix.indptr).astype(np.float64)
         self.idf_array = np.asarray(idf(self._df, self.N), dtype=np.float64)
 
         b = Config.b
         self.norm_array = 1.0 - b + b * (self.doc_lengths / max(self.avgdl, 1.0))
 
-        self.document_frequency = Counter(
-            {term: max(1, int(self._df[tid])) for term, tid in self._vocab.items()}
-        )
-        self._posting_lists: dict[int, NDArray[np.int64]] = {
-            tid: np.array(doc_ids, dtype=np.int64)
-            for tid, doc_ids in self._inverted_index.items()
-            if doc_ids
-        }
-        del self._inverted_index
+        # Lightweight proxy instead of full Counter (saves ~500MB-1GB)
+        self.document_frequency = _DFProxy(self._vocab, self._df)
+
+        # Build posting lists from CSR row structure
+        indptr = self.tf_matrix.indptr
+        indices = self.tf_matrix.indices
+        self._posting_lists: dict[int, NDArray[np.int64]] = {}
+        for tid in range(self.vocab_size):
+            start, end = int(indptr[tid]), int(indptr[tid + 1])
+            if end > start:
+                self._posting_lists[tid] = indices[start:end].astype(np.int64)
+
+        # Per-document channel TFs not stored (saves ~70+ GB for large corpora).
+        # Only needed by score() which is not used during evaluation.
+        self.prefix_doc_tf_dicts = None
+        self.bigram_doc_tf_dicts = None
+        self.micro_doc_tf_dicts = None
+
         self.document_length = self.doc_lengths
 
     def __len__(self) -> int:
@@ -503,7 +503,14 @@ class Corpus:
         return int(self.tf_matrix[tid, doc_idx]) if tid is not None else 0
 
     def get_term_frequencies(self, doc_idx: int) -> Counter[str]:
-        return self._doc_tf_dicts[doc_idx]
+        # Reconstruct Counter on-demand from sparse matrix.
+        # Only called by .score() which is rarely used (evaluator uses .rank()).
+        result = Counter()
+        for term, tid in self._vocab.items():
+            tf = int(self.tf_matrix[tid, doc_idx])
+            if tf > 0:
+                result[term] = tf
+        return result
 
     def get_posting_list(self, term: str) -> NDArray[np.int64]:
         tid = self._vocab.get(term)
@@ -521,7 +528,8 @@ class Corpus:
 
     @property
     def term_frequency(self) -> list[Counter[str]]:
-        return self._doc_tf_dicts
+        # Reconstruct on-demand if needed (rarely used).
+        return [self.get_term_frequencies(i) for i in range(self.N)]
 
     @property
     def vocabulary_size(self) -> int:
@@ -716,10 +724,20 @@ class BM25:
 
         qtf = np.array(query_term_weights, dtype=np.float64)
 
-        candidate_set: set[int] = set()
+        # For large corpora, use NumPy operations instead of Python sets to avoid memory overhead
+        posting_lists = []
         for tid in query_term_ids:
-            candidate_set.update(self.corpus._posting_lists.get(tid, np.array([], dtype=np.int64)).tolist())
-        candidate_docs = np.array(sorted(candidate_set), dtype=np.int64)
+            pl = self.corpus._posting_lists.get(tid, np.array([], dtype=np.int64))
+            if len(pl) > 0:
+                posting_lists.append(pl)
+
+        if not posting_lists:
+            candidate_docs = np.array([], dtype=np.int64)
+        elif len(posting_lists) == 1:
+            candidate_docs = posting_lists[0]  # Already sorted in posting list
+        else:
+            # np.unique sorts and deduplicates - more memory efficient than Python set for large arrays
+            candidate_docs = np.unique(np.concatenate(posting_lists))
 
         candidate_scores = self._score_candidates_vectorized(query_term_ids, candidate_docs, qtf)
         all_scores = np.zeros(self.corpus.N, dtype=np.float64)

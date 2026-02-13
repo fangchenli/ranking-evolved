@@ -1,14 +1,25 @@
 """
-Freeform lexical retrieval seed — maximum freedom for discovering a new retrieval method.
+BM25L — BM25 with shifted TF normalization for long documents.
 
-Core idea: document representation + query representation + scoring method.
-The evaluator requires: BM25, Corpus, tokenize, LuceneTokenizer; BM25 must have rank() and score().
-Everything else is evolvable. Default behavior: Lucene BM25 (same as current seed).
+Reference: Lv & Zhai, "When Documents Are Very Long, BM25 Fails!", SIGIR 2011.
+https://dl.acm.org/doi/10.1145/2009916.2010070
+
+Key idea: Standard BM25 overly penalizes long documents because the normalized
+TF (ctd) can approach 0 for very long documents.  BM25L adds a positive
+constant delta to ctd, shifting the TF saturation curve so long documents
+are not excessively penalized.
+
+Formulas:
+    IDF:  log((N + 1) / (df + 0.5))
+    ctd:  tf / (1 - b + b * dl / avgdl)
+    TF:   (k1 + 1) * (ctd + delta) / (k1 + ctd + delta)
+    Score = sum_t  IDF_t * TF_t
+
+Default parameters (from paper): k1=1.5, b=0.75, delta=0.5
 """
 
 from __future__ import annotations
 
-import math
 import os
 import threading
 from collections import Counter
@@ -32,96 +43,23 @@ MIN_QUERIES_FOR_PARALLEL = 10
 
 
 # -----------------------------------------------------------------------------
-# Config — EVOLVE: add parameters for your retrieval method
+# Parameters
 # -----------------------------------------------------------------------------
 
 class Config:
-    k1: float = 0.9
-    b: float = 0.4
+    k1: float = 1.5
+    b: float = 0.75
+    delta: float = 0.5   # shift constant for TF normalization
     epsilon: float = 1e-9
 
 
 # -----------------------------------------------------------------------------
-# IDF — EVOLVE: fundamental term importance (e.g. rarity, discriminativity)
+# IDF — BM25L variant: log((N + 1) / (df + 0.5))
 # -----------------------------------------------------------------------------
 
 def idf(df: float | NDArray[np.float64], N: int) -> float | NDArray[np.float64]:
-    """Term importance from document frequency. EVOLVE: try other formulations."""
-    return np.log(1.0 + (N - df + 0.5) / (df + 0.5))
-
-
-# -----------------------------------------------------------------------------
-# Document representation — EVOLVE: what to store per document
-# -----------------------------------------------------------------------------
-
-class DocumentRepr:
-    def __init__(self, term_frequencies: Counter[str], length: float):
-        self.term_frequencies = term_frequencies
-        self.length = length
-
-    @classmethod
-    def from_tokens(cls, tokens: list[str]) -> DocumentRepr:
-        """EVOLVE: different document views (e.g. positions, fields)."""
-        return cls(term_frequencies=Counter(tokens), length=float(len(tokens)))
-
-
-# -----------------------------------------------------------------------------
-# Query representation — EVOLVE: how to represent the query
-# -----------------------------------------------------------------------------
-
-class QueryRepr:
-    def __init__(self, terms: list[str], term_weights: dict[str, float] | None = None):
-        self.terms = terms
-        self.term_weights = term_weights or {t: 1.0 for t in terms}
-
-    @classmethod
-    def from_tokens(cls, tokens: list[str]) -> QueryRepr:
-        """EVOLVE: query expansion, term weighting, dedup, etc."""
-        return cls(terms=tokens, term_weights={t: 1.0 for t in tokens})
-
-
-# -----------------------------------------------------------------------------
-# Lexical retrieval score — EVOLVE: the core relevance formula
-# -----------------------------------------------------------------------------
-
-def retrieval_score(
-    query_repr: QueryRepr,
-    doc_tf: Counter[str],
-    doc_length: float,
-    N: int,
-    avgdl: float,
-    corpus_df: Counter[str],
-) -> float:
-    """
-    Score one document for one query. This is the lexical retrieval method.
-    EVOLVE: design a formulation with deep, fundamental, intuitive justification.
-    Default: Lucene BM25 (IDF × saturated TF, length-normalized).
-    """
-    k1, b, eps = Config.k1, Config.b, Config.epsilon
-    score = 0.0
-    for term in query_repr.terms:
-        tf = float(doc_tf.get(term, 0))
-        if tf <= 0:
-            continue
-        df = float(corpus_df.get(term, 1))
-        term_idf = float(idf(df, N))
-        norm = 1.0 - b + b * (doc_length / (avgdl + eps)) if avgdl > 0 else 1.0
-        tf_part = tf / (tf + k1 * norm + eps)
-        w = query_repr.term_weights.get(term, 1.0)
-        score += w * term_idf * tf_part
-    return score
-
-
-def score_document(query: list[str], doc_idx: int, corpus: Corpus) -> float:
-    """Entry point used by BM25.score(). EVOLVE: change pipeline if needed."""
-    if not query:
-        return 0.0
-    q = QueryRepr.from_tokens(query)
-    if not q.terms:
-        return 0.0
-    doc_tf = corpus.get_term_frequencies(doc_idx)
-    doc_length = float(corpus.doc_lengths[doc_idx])
-    return retrieval_score(q, doc_tf, doc_length, corpus.N, corpus.avgdl, corpus.document_frequency)
+    """BM25L IDF: log((N + 1) / (df + 0.5)).  Always non-negative."""
+    return np.log((N + 1.0) / (df + 0.5))
 
 
 # -----------------------------------------------------------------------------
@@ -131,6 +69,7 @@ def score_document(query: list[str], doc_idx: int, corpus: Corpus) -> float:
 _TOKENIZER: _BaseLuceneTokenizer | None = None
 _TOKENIZER_LOCK = threading.Lock()
 
+
 def _get_tokenizer() -> _BaseLuceneTokenizer:
     global _TOKENIZER
     if _TOKENIZER is None:
@@ -139,23 +78,25 @@ def _get_tokenizer() -> _BaseLuceneTokenizer:
                 _TOKENIZER = _BaseLuceneTokenizer()
     return _TOKENIZER
 
+
 def tokenize(text: str) -> list[str]:
     return _get_tokenizer()(text)
+
 
 class LuceneTokenizer:
     def __init__(self):
         self._tokenizer = _BaseLuceneTokenizer()
+
     def __call__(self, text: str) -> list[str]:
         return self._tokenizer(text)
 
 
 # -----------------------------------------------------------------------------
-# Corpus (interface fixed for evaluator; internals can evolve if needed)
+# Corpus
 # -----------------------------------------------------------------------------
 
 class Corpus:
     def __init__(self, documents: list[list[str]], ids: list[str] | None = None):
-        # MEMORY OPTIMIZATION: Don't store documents - only needed during construction
         self.ids = ids or [str(i) for i in range(len(documents))]
         self._id_to_idx = {doc_id: i for i, doc_id in enumerate(self.ids)}
         self.N = len(documents)
@@ -164,6 +105,7 @@ class Corpus:
         self.avgdl = float(np.mean(self.doc_lengths)) if self.N > 0 else 1.0
         self.average_document_length = self.avgdl
 
+        # Build vocabulary
         self._vocab: dict[str, int] = {}
         for doc in documents:
             for term in doc:
@@ -171,14 +113,14 @@ class Corpus:
                     self._vocab[term] = len(self._vocab)
         self.vocab_size = len(self._vocab)
 
+        # Build sparse TF matrix and inverted index
         tf_matrix_lil = lil_matrix((self.vocab_size, self.N), dtype=np.float64)
         self._inverted_index: dict[int, list[int]] = {i: [] for i in range(self.vocab_size)}
         self._df = np.zeros(self.vocab_size, dtype=np.float64)
-        # MEMORY OPTIMIZATION: Don't precompute _doc_tf_dicts - reconstruct on-demand from tf_matrix
 
         for doc_idx, doc in enumerate(documents):
             term_counts = Counter(doc)
-            seen = set()
+            seen: set[int] = set()
             for term, count in term_counts.items():
                 tid = self._vocab[term]
                 tf_matrix_lil[tid, doc_idx] = count
@@ -189,11 +131,15 @@ class Corpus:
 
         self.tf_matrix = csr_matrix(tf_matrix_lil)
         self.idf_array = np.asarray(idf(self._df, self.N), dtype=np.float64)
+
+        # Precompute length normalization denominator: 1 - b + b * dl / avgdl
         b = Config.b
         self.norm_array = 1.0 - b + b * (self.doc_lengths / max(self.avgdl, 1.0))
+
         self.document_frequency = Counter(
             {term: max(1, int(self._df[tid])) for term, tid in self._vocab.items()}
         )
+
         self._posting_lists: dict[int, NDArray[np.int64]] = {
             tid: np.array(doc_ids, dtype=np.int64)
             for tid, doc_ids in self._inverted_index.items()
@@ -220,8 +166,6 @@ class Corpus:
         return int(self.tf_matrix[tid, doc_idx]) if tid is not None else 0
 
     def get_term_frequencies(self, doc_idx: int) -> Counter[str]:
-        # MEMORY OPTIMIZATION: Reconstruct Counter on-demand from sparse matrix
-        # This is only called by .score() which is rarely used (evaluator uses .rank())
         result = Counter()
         for term, tid in self._vocab.items():
             tf = int(self.tf_matrix[tid, doc_idx])
@@ -231,7 +175,9 @@ class Corpus:
 
     def get_posting_list(self, term: str) -> NDArray[np.int64]:
         tid = self._vocab.get(term)
-        return self._posting_lists.get(tid, np.array([], dtype=np.int64)) if tid is not None else np.array([], dtype=np.int64)
+        if tid is not None:
+            return self._posting_lists.get(tid, np.array([], dtype=np.int64))
+        return np.array([], dtype=np.int64)
 
     def get_term_id(self, term: str) -> int | None:
         return self._vocab.get(term)
@@ -245,7 +191,6 @@ class Corpus:
 
     @property
     def term_frequency(self) -> list[Counter[str]]:
-        # MEMORY OPTIMIZATION: Reconstruct on-demand if needed (rarely used)
         return [self.get_term_frequencies(i) for i in range(self.N)]
 
     @property
@@ -258,15 +203,46 @@ class Corpus:
 
 
 # -----------------------------------------------------------------------------
-# BM25 (interface fixed for evaluator)
+# BM25L scoring
 # -----------------------------------------------------------------------------
+
+def retrieval_score(
+    query_terms: list[str],
+    doc_tf: Counter[str],
+    doc_length: float,
+    N: int,
+    avgdl: float,
+    corpus_df: Counter[str],
+) -> float:
+    """Score one document for one query using BM25L."""
+    k1, b, delta, eps = Config.k1, Config.b, Config.delta, Config.epsilon
+    norm = 1.0 - b + b * (doc_length / (avgdl + eps)) if avgdl > 0 else 1.0
+    score = 0.0
+    for term in query_terms:
+        tf = float(doc_tf.get(term, 0))
+        if tf <= 0:
+            continue
+        df = float(corpus_df.get(term, 1))
+        term_idf = float(idf(df, N))
+        ctd = tf / (norm + eps)
+        tf_part = (k1 + 1.0) * (ctd + delta) / (k1 + ctd + delta)
+        score += term_idf * tf_part
+    return score
+
 
 class BM25:
     def __init__(self, corpus: Corpus):
         self.corpus = corpus
 
     def score(self, query: list[str], index: int) -> float:
-        return score_document(query, index, self.corpus)
+        if not query:
+            return 0.0
+        doc_tf = self.corpus.get_term_frequencies(index)
+        doc_length = float(self.corpus.doc_lengths[index])
+        return retrieval_score(
+            query, doc_tf, doc_length,
+            self.corpus.N, self.corpus.avgdl, self.corpus.document_frequency,
+        )
 
     def _score_candidates_vectorized(
         self,
@@ -274,20 +250,29 @@ class BM25:
         candidate_docs: NDArray[np.int64],
         query_term_weights: NDArray[np.float64] | None = None,
     ) -> NDArray[np.float64]:
-        """Vectorized scoring for rank(); must match retrieval_score formula."""
+        """Vectorized BM25L scoring."""
         if len(candidate_docs) == 0:
             return np.array([], dtype=np.float64)
-        k1, eps = Config.k1, Config.epsilon
+
+        k1, delta, eps = Config.k1, Config.delta, Config.epsilon
         norms = self.corpus.norm_array[candidate_docs]
         scores = np.zeros(len(candidate_docs), dtype=np.float64)
+
         for i, term_id in enumerate(query_term_ids):
             idf_val = self.corpus.idf_array[term_id]
             if idf_val <= 0:
                 continue
             w = query_term_weights[i] if query_term_weights is not None else 1.0
             tf_row = self.corpus.tf_matrix[term_id, candidate_docs].toarray().flatten()
-            tf_part = tf_row / (tf_row + k1 * norms + eps)
+            # Mask: only score documents where term actually appears
+            mask = tf_row > 0
+            # ctd = tf / norm
+            ctd = tf_row / (norms + eps)
+            # BM25L: (k1+1)*(ctd+delta) / (k1 + ctd + delta)
+            tf_part = (k1 + 1.0) * (ctd + delta) / (k1 + ctd + delta)
+            tf_part *= mask  # zero out non-matching docs
             scores += w * idf_val * tf_part
+
         return scores
 
     def rank(
@@ -296,21 +281,26 @@ class BM25:
         top_k: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         if not query:
-            return np.arange(self.corpus.N, dtype=np.int64), np.zeros(self.corpus.N, dtype=np.float64)
+            return (
+                np.arange(self.corpus.N, dtype=np.int64),
+                np.zeros(self.corpus.N, dtype=np.float64),
+            )
         term_counts = Counter(query)
-        query_term_ids = []
-        query_term_weights = []
+        query_term_ids: list[int] = []
+        query_term_weights: list[float] = []
         for term, count in term_counts.items():
             tid = self.corpus.get_term_id(term)
             if tid is not None:
                 query_term_ids.append(tid)
                 query_term_weights.append(float(count))
         if not query_term_ids:
-            return np.arange(self.corpus.N, dtype=np.int64), np.zeros(self.corpus.N, dtype=np.float64)
+            return (
+                np.arange(self.corpus.N, dtype=np.int64),
+                np.zeros(self.corpus.N, dtype=np.float64),
+            )
         qtf = np.array(query_term_weights, dtype=np.float64)
 
-        # For large corpora, use NumPy operations instead of Python sets to avoid memory overhead
-        # Collect all posting lists, then use np.unique to get sorted unique candidate docs
+        # Gather candidate documents from posting lists
         posting_lists = []
         for tid in query_term_ids:
             pl = self.corpus._posting_lists.get(tid, np.array([], dtype=np.int64))
@@ -320,17 +310,20 @@ class BM25:
         if not posting_lists:
             candidate_docs = np.array([], dtype=np.int64)
         elif len(posting_lists) == 1:
-            candidate_docs = posting_lists[0]  # Already sorted in posting list
+            candidate_docs = posting_lists[0]
         else:
-            # np.unique sorts and deduplicates - more memory efficient than Python set for large arrays
             candidate_docs = np.unique(np.concatenate(posting_lists))
-        candidate_scores = self._score_candidates_vectorized(query_term_ids, candidate_docs, qtf)
+
+        candidate_scores = self._score_candidates_vectorized(
+            query_term_ids, candidate_docs, qtf,
+        )
         all_scores = np.zeros(self.corpus.N, dtype=np.float64)
         all_scores[candidate_docs] = candidate_scores
         sorted_indices = np.argsort(-all_scores).astype(np.int64)
         sorted_scores = all_scores[sorted_indices]
         if top_k is not None:
-            sorted_indices, sorted_scores = sorted_indices[:top_k], sorted_scores[:top_k]
+            sorted_indices = sorted_indices[:top_k]
+            sorted_scores = sorted_scores[:top_k]
         return sorted_indices, sorted_scores
 
     def batch_rank(
@@ -352,9 +345,6 @@ __all__ = [
     "LUCENE_STOPWORDS",
     "ENGLISH_STOPWORDS",
     "Config",
-    "DocumentRepr",
-    "QueryRepr",
     "idf",
     "retrieval_score",
-    "score_document",
 ]

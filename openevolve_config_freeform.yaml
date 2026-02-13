@@ -12,9 +12,9 @@
 #   export EVAL_EXCLUDE_DATASETS="dl19,dl20,fever,..."
 #   uv run python -m openevolve.cli src/ranking_evolved/bm25_freeform_fast.py evaluator_parallel.py --config openevolve_config_freeform.yaml --output openevolve_output_freeform_fast
 
-max_iterations: 130
-checkpoint_interval: 5
-log_level: "DEBUG"
+max_iterations: 300
+checkpoint_interval: 10
+log_level: "INFO"
 random_seed: 42
 diff_based_evolution: true
 max_code_length: 30000

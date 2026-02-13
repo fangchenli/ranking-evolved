@@ -1,16 +1,28 @@
 """
-Freeform lexical retrieval seed — maximum freedom for discovering a new retrieval method.
+Query Likelihood with Jelinek-Mercer smoothing seed program.
 
-Core idea: document representation + query representation + scoring method.
-The evaluator requires: BM25, Corpus, tokenize, LuceneTokenizer; BM25 must have rank() and score().
-Everything else is evolvable. Default behavior: Lucene BM25 (same as current seed).
+Core idea: same structure as ql_freeform_fast.py but uses Jelinek-Mercer (JM)
+smoothing instead of Dirichlet smoothing.
+
+JM smoothing formula (Lucene/Pyserini variant):
+    Score(D, Q) = Σ_{w in Q} log(1 + (1-λ) * c(w,D) / (|D| * λ * P(w|C)))
+
+where:
+    λ (lambda) = smoothing parameter (default 0.1, matching Pyserini's LMJelinekMercerSimilarity)
+    c(w,D) = term frequency of w in document D
+    |D| = document length
+    P(w|C) = collection probability of term w
+
+Key difference from Dirichlet: JM uses a fixed interpolation weight λ between
+the document model and collection model, whereas Dirichlet adapts the smoothing
+based on document length (shorter documents get more smoothing).
+
+The evaluator requires: QL, Corpus, tokenize, LuceneTokenizer; QL must have rank() and score().
 """
 
 from __future__ import annotations
 
 import math
-import os
-import threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
@@ -27,31 +39,34 @@ from ranking_evolved.bm25 import (
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
-NUM_QUERY_WORKERS = min(int(os.environ.get("BM25_QUERY_WORKERS", 32)), 64)
+NUM_QUERY_WORKERS = 32
 MIN_QUERIES_FOR_PARALLEL = 10
 
 
 # -----------------------------------------------------------------------------
-# Config — EVOLVE: add parameters for your retrieval method
+# Config — Jelinek-Mercer smoothing parameter
 # -----------------------------------------------------------------------------
 
 class Config:
-    k1: float = 0.9
-    b: float = 0.4
+    lam: float = 0.1  # Jelinek-Mercer λ (default 0.1, matching Pyserini's LMJelinekMercerSimilarity)
     epsilon: float = 1e-9
 
 
 # -----------------------------------------------------------------------------
-# IDF — EVOLVE: fundamental term importance (e.g. rarity, discriminativity)
+# Collection Language Model — P(w | C)
 # -----------------------------------------------------------------------------
 
-def idf(df: float | NDArray[np.float64], N: int) -> float | NDArray[np.float64]:
-    """Term importance from document frequency. EVOLVE: try other formulations."""
-    return np.log(1.0 + (N - df + 0.5) / (df + 0.5))
+def collection_probability(term: str, corpus_term_freq: Counter[str], total_tokens: int) -> float:
+    """
+    Collection probability P(w | C) = total frequency / total tokens.
+    """
+    if term not in corpus_term_freq:
+        return Config.epsilon
+    return corpus_term_freq[term] / max(total_tokens, 1)
 
 
 # -----------------------------------------------------------------------------
-# Document representation — EVOLVE: what to store per document
+# Document representation
 # -----------------------------------------------------------------------------
 
 class DocumentRepr:
@@ -61,12 +76,11 @@ class DocumentRepr:
 
     @classmethod
     def from_tokens(cls, tokens: list[str]) -> DocumentRepr:
-        """EVOLVE: different document views (e.g. positions, fields)."""
         return cls(term_frequencies=Counter(tokens), length=float(len(tokens)))
 
 
 # -----------------------------------------------------------------------------
-# Query representation — EVOLVE: how to represent the query
+# Query representation
 # -----------------------------------------------------------------------------
 
 class QueryRepr:
@@ -76,44 +90,53 @@ class QueryRepr:
 
     @classmethod
     def from_tokens(cls, tokens: list[str]) -> QueryRepr:
-        """EVOLVE: query expansion, term weighting, dedup, etc."""
         return cls(terms=tokens, term_weights={t: 1.0 for t in tokens})
 
 
 # -----------------------------------------------------------------------------
-# Lexical retrieval score — EVOLVE: the core relevance formula
+# Probabilistic retrieval score — Jelinek-Mercer smoothing
 # -----------------------------------------------------------------------------
 
 def retrieval_score(
     query_repr: QueryRepr,
     doc_tf: Counter[str],
     doc_length: float,
-    N: int,
-    avgdl: float,
-    corpus_df: Counter[str],
+    corpus_term_freq: Counter[str],
+    total_tokens: int,
 ) -> float:
     """
-    Score one document for one query. This is the lexical retrieval method.
-    EVOLVE: design a formulation with deep, fundamental, intuitive justification.
-    Default: Lucene BM25 (IDF × saturated TF, length-normalized).
+    Score one document for one query using Query Likelihood with Jelinek-Mercer smoothing.
+
+    Formula (Lucene/Pyserini variant):
+        Score(D, Q) = Σ_{w in Q} log(1 + (1-λ) * c(w,D) / (|D| * λ * P(w|C)))
+
+    This matches Pyserini's LMJelinekMercerSimilarity with λ=0.1.
+    When c(w,D) = 0, the per-term score is log(1) = 0 (naturally non-negative).
     """
-    k1, b, eps = Config.k1, Config.b, Config.epsilon
+    lam, eps = Config.lam, Config.epsilon
     score = 0.0
+
     for term in query_repr.terms:
-        tf = float(doc_tf.get(term, 0))
-        if tf <= 0:
-            continue
-        df = float(corpus_df.get(term, 1))
-        term_idf = float(idf(df, N))
-        norm = 1.0 - b + b * (doc_length / (avgdl + eps)) if avgdl > 0 else 1.0
-        tf_part = tf / (tf + k1 * norm + eps)
+        # c(w, D): term count in document
+        term_count = float(doc_tf.get(term, 0))
+
+        # P(w | C): collection probability
+        p_collection = collection_probability(term, corpus_term_freq, total_tokens)
+
+        # JM formula: log(1 + (1-λ) * tf / (|D| * λ * P(w|C)))
+        # When tf=0, this gives log(1) = 0 (non-negative by construction)
+        denominator = doc_length * lam * p_collection + eps
+        per_term_score = math.log(1.0 + (1.0 - lam) * term_count / denominator)
+
+        # Apply query term weight
         w = query_repr.term_weights.get(term, 1.0)
-        score += w * term_idf * tf_part
+        score += w * per_term_score
+
     return score
 
 
 def score_document(query: list[str], doc_idx: int, corpus: Corpus) -> float:
-    """Entry point used by BM25.score(). EVOLVE: change pipeline if needed."""
+    """Entry point used by QL.score()."""
     if not query:
         return 0.0
     q = QueryRepr.from_tokens(query)
@@ -121,7 +144,7 @@ def score_document(query: list[str], doc_idx: int, corpus: Corpus) -> float:
         return 0.0
     doc_tf = corpus.get_term_frequencies(doc_idx)
     doc_length = float(corpus.doc_lengths[doc_idx])
-    return retrieval_score(q, doc_tf, doc_length, corpus.N, corpus.avgdl, corpus.document_frequency)
+    return retrieval_score(q, doc_tf, doc_length, corpus.corpus_term_freq, corpus.total_tokens)
 
 
 # -----------------------------------------------------------------------------
@@ -129,14 +152,11 @@ def score_document(query: list[str], doc_idx: int, corpus: Corpus) -> float:
 # -----------------------------------------------------------------------------
 
 _TOKENIZER: _BaseLuceneTokenizer | None = None
-_TOKENIZER_LOCK = threading.Lock()
 
 def _get_tokenizer() -> _BaseLuceneTokenizer:
     global _TOKENIZER
     if _TOKENIZER is None:
-        with _TOKENIZER_LOCK:
-            if _TOKENIZER is None:
-                _TOKENIZER = _BaseLuceneTokenizer()
+        _TOKENIZER = _BaseLuceneTokenizer()
     return _TOKENIZER
 
 def tokenize(text: str) -> list[str]:
@@ -164,6 +184,7 @@ class Corpus:
         self.avgdl = float(np.mean(self.doc_lengths)) if self.N > 0 else 1.0
         self.average_document_length = self.avgdl
 
+        # Build vocabulary
         self._vocab: dict[str, int] = {}
         for doc in documents:
             for term in doc:
@@ -171,29 +192,37 @@ class Corpus:
                     self._vocab[term] = len(self._vocab)
         self.vocab_size = len(self._vocab)
 
+        # Collection statistics for Query Likelihood
+        self.corpus_term_freq = Counter()  # Total frequency of each term in collection
+        self.total_tokens = 0  # Sum of all doc lengths
+
+        # Build sparse TF matrix and inverted index
         tf_matrix_lil = lil_matrix((self.vocab_size, self.N), dtype=np.float64)
         self._inverted_index: dict[int, list[int]] = {i: [] for i in range(self.vocab_size)}
         self._df = np.zeros(self.vocab_size, dtype=np.float64)
-        # MEMORY OPTIMIZATION: Don't precompute _doc_tf_dicts - reconstruct on-demand from tf_matrix
 
         for doc_idx, doc in enumerate(documents):
+            self.total_tokens += len(doc)
             term_counts = Counter(doc)
             seen = set()
             for term, count in term_counts.items():
                 tid = self._vocab[term]
                 tf_matrix_lil[tid, doc_idx] = count
+                self.corpus_term_freq[term] += count
                 if tid not in seen:
                     self._inverted_index[tid].append(doc_idx)
                     self._df[tid] += 1
                     seen.add(tid)
 
         self.tf_matrix = csr_matrix(tf_matrix_lil)
-        self.idf_array = np.asarray(idf(self._df, self.N), dtype=np.float64)
-        b = Config.b
-        self.norm_array = 1.0 - b + b * (self.doc_lengths / max(self.avgdl, 1.0))
-        self.document_frequency = Counter(
-            {term: max(1, int(self._df[tid])) for term, tid in self._vocab.items()}
-        )
+
+        # Collection probability array for vectorized scoring
+        self._collection_prob = np.zeros(self.vocab_size, dtype=np.float64)
+        for term, tid in self._vocab.items():
+            self._collection_prob[tid] = collection_probability(
+                term, self.corpus_term_freq, self.total_tokens
+            )
+
         self._posting_lists: dict[int, NDArray[np.int64]] = {
             tid: np.array(doc_ids, dtype=np.int64)
             for tid, doc_ids in self._inverted_index.items()
@@ -221,7 +250,6 @@ class Corpus:
 
     def get_term_frequencies(self, doc_idx: int) -> Counter[str]:
         # MEMORY OPTIMIZATION: Reconstruct Counter on-demand from sparse matrix
-        # This is only called by .score() which is rarely used (evaluator uses .rank())
         result = Counter()
         for term, tid in self._vocab.items():
             tf = int(self.tf_matrix[tid, doc_idx])
@@ -245,7 +273,6 @@ class Corpus:
 
     @property
     def term_frequency(self) -> list[Counter[str]]:
-        # MEMORY OPTIMIZATION: Reconstruct on-demand if needed (rarely used)
         return [self.get_term_frequencies(i) for i in range(self.N)]
 
     @property
@@ -258,10 +285,10 @@ class Corpus:
 
 
 # -----------------------------------------------------------------------------
-# BM25 (interface fixed for evaluator)
+# QL (interface fixed for evaluator)
 # -----------------------------------------------------------------------------
 
-class BM25:
+class QL:
     def __init__(self, corpus: Corpus):
         self.corpus = corpus
 
@@ -274,20 +301,29 @@ class BM25:
         candidate_docs: NDArray[np.int64],
         query_term_weights: NDArray[np.float64] | None = None,
     ) -> NDArray[np.float64]:
-        """Vectorized scoring for rank(); must match retrieval_score formula."""
+        """Vectorized scoring for rank(); must match retrieval_score formula (JM smoothing)."""
         if len(candidate_docs) == 0:
             return np.array([], dtype=np.float64)
-        k1, eps = Config.k1, Config.epsilon
-        norms = self.corpus.norm_array[candidate_docs]
+
+        lam, eps = Config.lam, Config.epsilon
+        doc_lengths = self.corpus.doc_lengths[candidate_docs]
         scores = np.zeros(len(candidate_docs), dtype=np.float64)
+
         for i, term_id in enumerate(query_term_ids):
-            idf_val = self.corpus.idf_array[term_id]
-            if idf_val <= 0:
-                continue
-            w = query_term_weights[i] if query_term_weights is not None else 1.0
+            # Get collection probability for this term
+            p_collection = self.corpus._collection_prob[term_id]
+
+            # Get term frequencies for candidates
             tf_row = self.corpus.tf_matrix[term_id, candidate_docs].toarray().flatten()
-            tf_part = tf_row / (tf_row + k1 * norms + eps)
-            scores += w * idf_val * tf_part
+
+            # JM formula: log(1 + (1-λ) * tf / (|D| * λ * P(w|C)))
+            denominator = doc_lengths * lam * p_collection + eps
+            per_term_scores = np.log(1.0 + (1.0 - lam) * tf_row / denominator)
+
+            # Apply query term weight (no clamping needed — JM scores are non-negative by construction)
+            w = query_term_weights[i] if query_term_weights is not None else 1.0
+            scores += w * per_term_scores
+
         return scores
 
     def rank(
@@ -297,6 +333,7 @@ class BM25:
     ) -> tuple[np.ndarray, np.ndarray]:
         if not query:
             return np.arange(self.corpus.N, dtype=np.int64), np.zeros(self.corpus.N, dtype=np.float64)
+
         term_counts = Counter(query)
         query_term_ids = []
         query_term_weights = []
@@ -305,12 +342,13 @@ class BM25:
             if tid is not None:
                 query_term_ids.append(tid)
                 query_term_weights.append(float(count))
+
         if not query_term_ids:
             return np.arange(self.corpus.N, dtype=np.int64), np.zeros(self.corpus.N, dtype=np.float64)
+
         qtf = np.array(query_term_weights, dtype=np.float64)
 
         # For large corpora, use NumPy operations instead of Python sets to avoid memory overhead
-        # Collect all posting lists, then use np.unique to get sorted unique candidate docs
         posting_lists = []
         for tid in query_term_ids:
             pl = self.corpus._posting_lists.get(tid, np.array([], dtype=np.int64))
@@ -320,17 +358,22 @@ class BM25:
         if not posting_lists:
             candidate_docs = np.array([], dtype=np.int64)
         elif len(posting_lists) == 1:
-            candidate_docs = posting_lists[0]  # Already sorted in posting list
+            candidate_docs = posting_lists[0]
         else:
-            # np.unique sorts and deduplicates - more memory efficient than Python set for large arrays
             candidate_docs = np.unique(np.concatenate(posting_lists))
         candidate_scores = self._score_candidates_vectorized(query_term_ids, candidate_docs, qtf)
-        all_scores = np.zeros(self.corpus.N, dtype=np.float64)
+
+        # JM scores are non-negative (log(1 + ...) >= 0), so non-candidates with score 0
+        # will rank below any candidate with at least one matching term.
+        # Use -1e10 for non-candidates to ensure they sort last.
+        all_scores = np.full(self.corpus.N, -1e10, dtype=np.float64)
         all_scores[candidate_docs] = candidate_scores
         sorted_indices = np.argsort(-all_scores).astype(np.int64)
         sorted_scores = all_scores[sorted_indices]
+
         if top_k is not None:
             sorted_indices, sorted_scores = sorted_indices[:top_k], sorted_scores[:top_k]
+
         return sorted_indices, sorted_scores
 
     def batch_rank(
@@ -345,7 +388,7 @@ class BM25:
 
 
 __all__ = [
-    "BM25",
+    "QL",
     "Corpus",
     "tokenize",
     "LuceneTokenizer",
@@ -354,7 +397,7 @@ __all__ = [
     "Config",
     "DocumentRepr",
     "QueryRepr",
-    "idf",
+    "collection_probability",
     "retrieval_score",
     "score_document",
 ]

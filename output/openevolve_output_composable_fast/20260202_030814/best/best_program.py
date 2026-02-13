@@ -503,7 +503,7 @@ class Corpus:
     """Preprocessed collection; inverted index + sparse matrix. Interface must stay stable."""
 
     def __init__(self, documents: list[list[str]], ids: list[str] | None = None):
-        self.documents = documents
+        # MEMORY OPTIMIZATION: Don\'t store documents - only needed during construction
         self.ids = ids or [str(i) for i in range(len(documents))]
         self._id_to_idx = {doc_id: i for i, doc_id in enumerate(self.ids)}
         self.N = len(documents)
@@ -524,7 +524,7 @@ class Corpus:
         tf_matrix_lil = lil_matrix((self.vocab_size, self.N), dtype=np.float64)
         self._inverted_index: dict[int, list[int]] = {i: [] for i in range(self.vocab_size)}
         self._df = np.zeros(self.vocab_size, dtype=np.float64)
-        self._doc_tf_dicts: list[Counter[str]] = [Counter(doc) for doc in documents]
+        # MEMORY OPTIMIZATION: Don\'t precompute _doc_tf_dicts - reconstruct on-demand from tf_matrix
 
         for doc_idx, doc in enumerate(documents):
             term_counts = Counter(doc)
@@ -576,7 +576,30 @@ class Corpus:
         return int(self.tf_matrix[term_id, doc_idx])
 
     def get_term_frequencies(self, doc_idx: int) -> Counter[str]:
-        return self._doc_tf_dicts[doc_idx]
+
+
+        # MEMORY OPTIMIZATION: Reconstruct Counter on-demand from sparse matrix
+
+
+        # This is only called by .score() which is rarely used (evaluator uses .rank())
+
+
+        result = Counter()
+
+
+        for term, tid in self._vocab.items():
+
+
+            tf = int(self.tf_matrix[tid, doc_idx])
+
+
+            if tf > 0:
+
+
+                result[term] = tf
+
+
+        return result
 
     def get_posting_list(self, term: str) -> NDArray[np.int64]:
         term_id = self._vocab.get(term)
@@ -603,8 +626,15 @@ class Corpus:
         return None
 
     @property
+
+
     def term_frequency(self) -> list[Counter[str]]:
-        return self._doc_tf_dicts
+
+
+        # MEMORY OPTIMIZATION: Reconstruct on-demand if needed (rarely used)
+
+
+        return [self.get_term_frequencies(i) for i in range(self.N)]
 
 
 # ----- BM25 API (interface fixed for evaluator) -----
@@ -743,12 +773,20 @@ class BM25:
         alpha = float(max(0.0, min(1.0, EvolvedParameters.qidf_alpha)))
         q_weights = qtf_weights * ((1.0 - alpha) + alpha * soft)
 
-        candidate_set: set[int] = set()
+        # For large corpora, use NumPy operations instead of Python sets to avoid memory overhead
+        posting_lists = []
         for term_id in query_term_ids:
             posting_list = self.corpus._posting_lists.get(term_id, np.array([], dtype=np.int64))
-            candidate_set.update(posting_list.tolist())
+            if len(posting_list) > 0:
+                posting_lists.append(posting_list)
 
-        candidate_docs = np.array(sorted(candidate_set), dtype=np.int64)
+        if not posting_lists:
+            candidate_docs = np.array([], dtype=np.int64)
+        elif len(posting_lists) == 1:
+            candidate_docs = posting_lists[0]  # Already sorted in posting list
+        else:
+            # np.unique sorts and deduplicates - more memory efficient than Python set for large arrays
+            candidate_docs = np.unique(np.concatenate(posting_lists))
         candidate_scores = self._score_candidates_vectorized(
             query_term_ids, candidate_docs, q_weights
         )

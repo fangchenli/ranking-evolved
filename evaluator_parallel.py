@@ -152,6 +152,9 @@ class EvalConfig:
     bright_datasets: list[str] | None = None
     beir_datasets: list[str] | None = None
     trec_dl_datasets: list[str] | None = None
+    # Optional: restrict evaluation to these full dataset names only
+    # e.g. {"beir_fever", "trec_dl_combined"} — used for incremental re-runs
+    include_only_datasets: set[str] | None = None
 
 
 @dataclass
@@ -174,6 +177,10 @@ class DatasetResult:
     num_docs: int
     num_queries: int
     error: str | None = None
+    # Per-query scores for significance testing (populated when --save is used)
+    per_query_ids: list[str] | None = None
+    per_query_ndcg: list[float] | None = None
+    per_query_recall: list[float] | None = None
 
 
 # =============================================================================
@@ -1083,6 +1090,8 @@ def get_dataset_tasks(config: EvalConfig, exclude_datasets: set[str] | None = No
     if exclude_datasets is None:
         exclude_datasets = DEFAULT_EXCLUDE_DATASETS
     
+    only = config.include_only_datasets  # None = include all; set = restrict to these
+    
     tasks = []
     
     if config.include_bright:
@@ -1091,6 +1100,8 @@ def get_dataset_tasks(config: EvalConfig, exclude_datasets: set[str] | None = No
             if ds in exclude_datasets:
                 continue
             full_name = f"bright_{ds}"
+            if only is not None and full_name not in only:
+                continue
             size = DATASET_SIZES.get(full_name, 100_000)
             tasks.append(DatasetTask("bright", ds, full_name, size))
     
@@ -1100,6 +1111,8 @@ def get_dataset_tasks(config: EvalConfig, exclude_datasets: set[str] | None = No
             if ds in exclude_datasets:
                 continue
             full_name = f"beir_{ds}"
+            if only is not None and full_name not in only:
+                continue
             size = DATASET_SIZES.get(full_name, 100_000)
             tasks.append(DatasetTask("beir", ds, full_name, size))
     
@@ -1107,6 +1120,13 @@ def get_dataset_tasks(config: EvalConfig, exclude_datasets: set[str] | None = No
         datasets = config.trec_dl_datasets or TREC_DL_DATASETS
         # Filter out excluded TREC DL datasets
         datasets = [ds for ds in datasets if ds not in exclude_datasets]
+        
+        # If include_only_datasets is set, check if any TREC DL tasks are wanted
+        if only is not None:
+            # trec_dl_combined covers both dl19 and dl20
+            want_trec = "trec_dl_combined" in only or any(f"trec_dl_{ds}" in only for ds in datasets)
+            if not want_trec:
+                datasets = []
         
         if not datasets:
             pass  # All TREC DL excluded
@@ -1122,6 +1142,8 @@ def get_dataset_tasks(config: EvalConfig, exclude_datasets: set[str] | None = No
             # If only one is requested, use separate evaluation
             for ds in datasets:
                 full_name = f"trec_dl_{ds}"
+                if only is not None and full_name not in only:
+                    continue
                 size = DATASET_SIZES.get(full_name, 8_000_000)
                 tasks.append(DatasetTask("trec_dl", ds, full_name, size))
     
@@ -1354,6 +1376,7 @@ def aggregate_results(results: list[DatasetResult]) -> dict[str, Any]:
     output["avg_recall@100"] = avg_recall
     # Zero score if any dataset failed (avoids reward hacking from partial/crashed runs)
     output["combined_score"] = 0.0 if datasets_failed > 0 else (0.8 * avg_recall + 0.2 * avg_ndcg)
+    output["average_score"] = 0.0 if datasets_failed > 0 else (0.5 * avg_ndcg + 0.5 * avg_recall)
     
     # Timing
     output["total_index_time_ms"] = total_index_time

@@ -75,10 +75,12 @@ import json
 import multiprocessing as mp
 import os
 import random
+import sys
 import time
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -155,6 +157,8 @@ class EvalConfig:
     bright_datasets: list[str] | None = None
     beir_datasets: list[str] | None = None
     trec_dl_datasets: list[str] | None = None
+    # Optional: restrict evaluation to these full dataset names only
+    include_only_datasets: set[str] | None = None
 
 
 @dataclass
@@ -177,6 +181,10 @@ class DatasetResult:
     num_docs: int
     num_queries: int
     error: str | None = None
+    # Per-query scores for significance testing (populated when --save is used)
+    per_query_ids: list[str] | None = None
+    per_query_ndcg: list[float] | None = None
+    per_query_recall: list[float] | None = None
 
 
 # =============================================================================
@@ -292,14 +300,11 @@ def evaluate_pyserini_official(
     
     # Top-K for retrieval - 1000 is more than enough for Recall@100 and nDCG@10
     RETRIEVAL_K = 1000
-    
-    # Number of search threads (Pyserini uses Java-side threading)
-    num_threads = min(os.cpu_count() or 8, 64)
-    
+
     try:
         from pyserini.index.lucene import LuceneIndexer
         from pyserini.search.lucene import LuceneSearcher
-        
+
         # Load dataset
         if benchmark == "bright":
             loader = BRIGHTLoader()
@@ -312,6 +317,16 @@ def evaluate_pyserini_official(
             dataset = loader.load(dataset_name)
         else:
             raise ValueError(f"Unknown benchmark: {benchmark}")
+
+        # Reduce parallelism for huge datasets to prevent OOM
+        # Number of search threads (Pyserini uses Java-side threading)
+        n_docs = len(dataset.corpus)
+        if n_docs >= LARGE_THRESHOLD:  # 2M+ docs (beir_fever, beir_hotpotqa, beir_nq)
+            num_threads = 1  # Ultra-conservative: single-threaded to avoid OOM
+            if config.verbose:
+                print(f"    {full_name}: using sequential processing (corpus: {n_docs:,} docs, 1 thread) to prevent OOM", file=sys.stderr, flush=True)
+        else:
+            num_threads = min(os.cpu_count() or 8, 64)
         
         # Create temp directory for Lucene index
         index_dir = Path(tempfile.mkdtemp(prefix="pyserini_idx_"))
@@ -444,6 +459,9 @@ def evaluate_pyserini_official(
                 query_time_ms=query_time_ms,
                 num_docs=len(dataset.corpus),
                 num_queries=len(all_relevant),
+                per_query_ids=[str(q) for q in valid_qids],
+                per_query_ndcg=[float(s) for s in ndcg_scores],
+                per_query_recall=[float(s) for s in recall_scores],
             )
             
         finally:
@@ -487,19 +505,27 @@ def evaluate_pyserini_trec_dl_combined(
     # Set JAVA_HOME if not set
     if "JAVA_HOME" not in os.environ:
         os.environ["JAVA_HOME"] = "/usr/lib/jvm/java-21-openjdk-amd64"
-    
+
     RETRIEVAL_K = 1000
-    num_threads = min(os.cpu_count() or 8, 64)
-    
+
     results = []
-    
+
     try:
         from pyserini.index.lucene import LuceneIndexer
         from pyserini.search.lucene import LuceneSearcher
-        
+
         # Load shared MSMARCO corpus
         loader = TRECDLLoader(data_dir=config.trec_dl_data_dir)
         dl19_dataset = loader.load("dl19")  # This loads the shared corpus
+
+        # Reduce parallelism for huge datasets to prevent OOM
+        n_docs = len(dl19_dataset.corpus)
+        if n_docs >= LARGE_THRESHOLD:  # 2M+ docs (TREC DL is 8.8M docs)
+            num_threads = 1  # Ultra-conservative: single-threaded to avoid OOM
+            if config.verbose:
+                print(f"    trec_dl_combined: using sequential processing (corpus: {n_docs:,} docs, 1 thread) to prevent OOM", file=sys.stderr, flush=True)
+        else:
+            num_threads = min(os.cpu_count() or 8, 64)
         
         # Create temp directory for Lucene index
         index_dir = Path(tempfile.mkdtemp(prefix="pyserini_trec_dl_"))
@@ -671,6 +697,9 @@ def _evaluate_pyserini_queries(
         query_time_ms=query_time_ms,
         num_docs=len(dataset.corpus),
         num_queries=len(all_relevant),
+        per_query_ids=[str(q) for q in valid_qids],
+        per_query_ndcg=[float(s) for s in ndcg_scores],
+        per_query_recall=[float(s) for s in recall_scores],
     )
 
 
@@ -747,6 +776,11 @@ def evaluate_single_dataset(
         index_end = time.perf_counter()
         index_time_ms = (index_end - index_start) * 1000
         
+        # Free tokenized docs - no longer needed after index construction (~6GB for 5M docs)
+        import gc
+        del doc_tokens
+        gc.collect()
+        
         # === PHASE 2: Query Evaluation ===
         query_start = time.perf_counter()
         
@@ -766,10 +800,12 @@ def evaluate_single_dataset(
         # Evaluate queries
         all_relevant = []
         all_retrieved = []
+        valid_qids = []
         
         for qid, query_text in zip(query_ids, queries, strict=False):
             query_tokens = tokenize_fn(query_text)
-            ranked_indices, _ = ql.rank(query_tokens)
+            # Pass top_k to avoid returning full N-element arrays
+            ranked_indices, _ = ql.rank(query_tokens, top_k=RECALL_K)
             
             # Get relevant documents
             relevant_doc_ids = dataset.get_relevant_docs(qid)
@@ -785,8 +821,11 @@ def evaluate_single_dataset(
             if not relevant_indices:
                 continue
             
+            valid_qids.append(str(qid))
             all_relevant.append(np.array(relevant_indices, dtype=int))
-            all_retrieved.append(np.array(ranked_indices, dtype=int))
+            # CRITICAL: .copy() releases the numpy view that holds the full N-element
+            # backing array (~42MB for 5M docs) instead of just top_k elements (~800 bytes)
+            all_retrieved.append(ranked_indices[:RECALL_K].copy())
         
         query_end = time.perf_counter()
         query_time_ms = (query_end - query_start) * 1000
@@ -821,6 +860,9 @@ def evaluate_single_dataset(
             query_time_ms=query_time_ms,
             num_docs=len(dataset.corpus),
             num_queries=len(all_relevant),
+            per_query_ids=valid_qids,
+            per_query_ndcg=[float(s) for s in ndcg_scores],
+            per_query_recall=[float(s) for s in recall_scores],
         )
         
     except Exception as e:
@@ -894,6 +936,11 @@ def evaluate_trec_dl_combined(
         index_end = time.perf_counter()
         shared_index_time_ms = (index_end - index_start) * 1000
         
+        # Free tokenized docs - no longer needed after index construction
+        import gc
+        del doc_tokens
+        gc.collect()
+        
         # Build ID to index mapping (shared)
         id_to_idx = {doc_id: idx for idx, doc_id in enumerate(dl19_dataset.corpus_ids)}
         
@@ -964,10 +1011,12 @@ def _evaluate_queries_on_index(
     # Evaluate queries
     all_relevant = []
     all_retrieved = []
+    valid_qids = []
     
     for qid, query_text in zip(query_ids, queries, strict=False):
         query_tokens = tokenize_fn(query_text)
-        ranked_indices, _ = ql.rank(query_tokens)
+        # Pass top_k to avoid returning full N-element arrays
+        ranked_indices, _ = ql.rank(query_tokens, top_k=RECALL_K)
 
         # Get relevant documents
         relevant_doc_ids = dataset.get_relevant_docs(qid)
@@ -983,8 +1032,10 @@ def _evaluate_queries_on_index(
         if not relevant_indices:
             continue
         
+        valid_qids.append(str(qid))
         all_relevant.append(np.array(relevant_indices, dtype=int))
-        all_retrieved.append(np.array(ranked_indices, dtype=int))
+        # .copy() releases the numpy view that holds the full N-element backing array
+        all_retrieved.append(ranked_indices[:RECALL_K].copy())
     
     query_end = time.perf_counter()
     query_time_ms = (query_end - query_start) * 1000
@@ -1019,6 +1070,9 @@ def _evaluate_queries_on_index(
         query_time_ms=query_time_ms,
         num_docs=len(dataset.corpus),
         num_queries=len(all_relevant),
+        per_query_ids=valid_qids,
+        per_query_ndcg=[float(s) for s in ndcg_scores],
+        per_query_recall=[float(s) for s in recall_scores],
     )
 
 
@@ -1026,6 +1080,78 @@ def _evaluate_queries_on_index(
 # when OpenEvolve loads this file as "evaluation_module" (child processes would otherwise
 # fail with ModuleNotFoundError: No module named 'evaluation_module').
 from evaluator_ql_parallel_worker import _worker_evaluate
+
+
+# =============================================================================
+# Incremental Evaluation Support
+# =============================================================================
+
+PER_DATASET_SUFFIXES = ("_ndcg@10", "_recall@100", "_index_time_ms", "_query_time_ms", "_error")
+AGGREGATE_KEYS = (
+    "avg_ndcg@10", "avg_recall@100", "combined_score", "average_score",
+    "datasets_evaluated", "datasets_failed",
+    "total_index_time_ms", "total_query_time_ms", "total_time_ms",
+)
+
+
+def _get_failed_datasets(data: dict) -> set[str]:
+    """Full dataset names that have an _error key."""
+    failed = set()
+    for key in data:
+        if key.endswith("_error"):
+            failed.add(key[: -len("_error")])
+    return failed
+
+
+def _get_all_prefixes(data: dict) -> set[str]:
+    """Dataset prefixes from _ndcg@10 keys."""
+    return {key[: -len("_ndcg@10")] for key in data if key.endswith("_ndcg@10") and key != "avg_ndcg@10"}
+
+
+def _recompute_aggregates(data: dict) -> None:
+    """Recompute aggregate fields from per-dataset keys. Modifies in place."""
+    prefixes = _get_all_prefixes(data)
+    all_ndcg, all_recall = [], []
+    total_index = total_query = 0.0
+    evaluated = failed = 0
+    for prefix in prefixes:
+        if data.get(f"{prefix}_error"):
+            failed += 1
+            continue
+        ndcg_key, recall_key = f"{prefix}_ndcg@10", f"{prefix}_recall@100"
+        if ndcg_key in data and recall_key in data:
+            all_ndcg.append(float(data[ndcg_key]))
+            all_recall.append(float(data[recall_key]))
+            total_index += float(data.get(f"{prefix}_index_time_ms", 0))
+            total_query += float(data.get(f"{prefix}_query_time_ms", 0))
+            evaluated += 1
+    data["avg_ndcg@10"] = sum(all_ndcg) / len(all_ndcg) if all_ndcg else 0.0
+    data["avg_recall@100"] = sum(all_recall) / len(all_recall) if all_recall else 0.0
+    data["datasets_evaluated"] = evaluated
+    data["datasets_failed"] = failed
+    data["total_index_time_ms"] = total_index
+    data["total_query_time_ms"] = total_query
+    data["total_time_ms"] = total_index + total_query
+    data["combined_score"] = 0.0 if failed > 0 else (0.8 * data["avg_recall@100"] + 0.2 * data["avg_ndcg@10"])
+    data["average_score"] = 0.0 if failed > 0 else (0.5 * data["avg_ndcg@10"] + 0.5 * data["avg_recall@100"])
+    data["error"] = 0.0 if evaluated > 0 else 1.0
+
+
+def _merge_partial_into(existing: dict, partial: dict) -> None:
+    """Update existing with per-dataset keys from partial; remove _error when partial succeeded; recompute aggregates."""
+    for key in list(partial.keys()):
+        if key in ("_metadata", "error") or key in AGGREGATE_KEYS:
+            continue
+        for suffix in PER_DATASET_SUFFIXES:
+            if key.endswith(suffix):
+                existing[key] = partial[key]
+                break
+    for key in list(existing.keys()):
+        if key.endswith("_error"):
+            prefix = key[: -len("_error")]
+            if f"{prefix}_ndcg@10" in partial and f"{prefix}_error" not in partial:
+                del existing[key]
+    _recompute_aggregates(existing)
 
 
 # =============================================================================
@@ -1044,6 +1170,8 @@ def get_dataset_tasks(config: EvalConfig, exclude_datasets: set[str] | None = No
     if exclude_datasets is None:
         exclude_datasets = DEFAULT_EXCLUDE_DATASETS
     
+    only = config.include_only_datasets  # None = include all; set = restrict to these
+    
     tasks = []
     
     if config.include_bright:
@@ -1052,6 +1180,8 @@ def get_dataset_tasks(config: EvalConfig, exclude_datasets: set[str] | None = No
             if ds in exclude_datasets:
                 continue
             full_name = f"bright_{ds}"
+            if only is not None and full_name not in only:
+                continue
             size = DATASET_SIZES.get(full_name, 100_000)
             tasks.append(DatasetTask("bright", ds, full_name, size))
     
@@ -1061,6 +1191,8 @@ def get_dataset_tasks(config: EvalConfig, exclude_datasets: set[str] | None = No
             if ds in exclude_datasets:
                 continue
             full_name = f"beir_{ds}"
+            if only is not None and full_name not in only:
+                continue
             size = DATASET_SIZES.get(full_name, 100_000)
             tasks.append(DatasetTask("beir", ds, full_name, size))
     
@@ -1068,6 +1200,12 @@ def get_dataset_tasks(config: EvalConfig, exclude_datasets: set[str] | None = No
         datasets = config.trec_dl_datasets or TREC_DL_DATASETS
         # Filter out excluded TREC DL datasets
         datasets = [ds for ds in datasets if ds not in exclude_datasets]
+        
+        # If include_only_datasets is set, check if any TREC DL tasks are wanted
+        if only is not None:
+            want_trec = "trec_dl_combined" in only or any(f"trec_dl_{ds}" in only for ds in datasets)
+            if not want_trec:
+                datasets = []
         
         if not datasets:
             pass  # All TREC DL excluded
@@ -1083,6 +1221,8 @@ def get_dataset_tasks(config: EvalConfig, exclude_datasets: set[str] | None = No
             # If only one is requested, use separate evaluation
             for ds in datasets:
                 full_name = f"trec_dl_{ds}"
+                if only is not None and full_name not in only:
+                    continue
                 size = DATASET_SIZES.get(full_name, 8_000_000)
                 tasks.append(DatasetTask("trec_dl", ds, full_name, size))
     
@@ -1156,26 +1296,66 @@ def schedule_tasks(tasks: list[DatasetTask], max_workers: int = 0) -> list[list[
 # =============================================================================
 
 
+def _collect_per_query(result: DatasetResult, per_query_data: dict) -> None:
+    """Add per-query scores from a DatasetResult to the per_query_data dict."""
+    if result.per_query_ids is not None and result.error is None:
+        per_query_data[result.name] = {
+            "query_ids": result.per_query_ids,
+            "ndcg@10": result.per_query_ndcg,
+            "recall@100": result.per_query_recall,
+        }
+
+
+def _save_per_query_incremental(save_path: Path, per_query_data: dict) -> None:
+    """Atomically save per-query data to companion file."""
+    pq_path = save_path.with_name(save_path.stem + "_perquery.json")
+    tmp_path = pq_path.with_suffix(pq_path.suffix + ".tmp")
+    with open(tmp_path, "w") as f:
+        json.dump(per_query_data, f, indent=2)
+    tmp_path.replace(pq_path)
+
+
 def evaluate_parallel(
     program_path: str,
     config: EvalConfig,
     verbose: bool = False,
+    save_path: Path | None = None,
 ) -> dict[str, Any]:
     """
-    Evaluate BM25 on all datasets in parallel.
-    
+    Evaluate QL on all datasets in parallel with incremental saving.
+
     Args:
-        program_path: Path to BM25 implementation
+        program_path: Path to QL implementation
         config: Evaluation configuration
         verbose: Print progress
-        
+        save_path: Optional path to incrementally save results
+
     Returns:
         Dictionary with all metrics (flat format for OpenEvolve)
     """
+    from pathlib import Path
+
+    # Load existing results if save_path exists
+    existing: dict[str, Any] = {}
+    per_query_data: dict[str, Any] = {}
+    if save_path and save_path.is_file():
+        with open(save_path) as f:
+            existing = json.load(f)
+        if verbose:
+            print(f"Loaded existing results from {save_path}", file=sys.stderr)
+        # Load existing per-query data if available
+        pq_path = save_path.with_name(save_path.stem + "_perquery.json")
+        if pq_path.is_file():
+            try:
+                with open(pq_path) as f:
+                    per_query_data = json.load(f)
+            except Exception:
+                per_query_data = {}
+
     # Get and schedule tasks
     tasks = get_dataset_tasks(config)
     batches = schedule_tasks(tasks, config.max_workers)
-    
+
     if verbose:
         total_tasks = sum(len(b) for b in batches)
         print(f"Evaluating {total_tasks} datasets in {len(batches)} batches")
@@ -1183,7 +1363,7 @@ def evaluate_parallel(
         print(f"  Sample queries: {config.sample_queries or 'all'}")
         print(f"  Threads per worker: {config.threads_per_worker}")
         print()
-    
+
     # Config dict for serialization to workers
     config_dict = {
         "sample_queries": config.sample_queries,
@@ -1193,22 +1373,22 @@ def evaluate_parallel(
         "beir_data_dir": config.beir_data_dir,
         "trec_dl_data_dir": config.trec_dl_data_dir,
     }
-    
+
     results: list[DatasetResult] = []
-    
+
     # Process batches
     for batch_idx, batch in enumerate(batches):
         if verbose:
             batch_names = [t.full_name for t in batch]
             print(f"Batch {batch_idx + 1}/{len(batches)}: {', '.join(batch_names)}")
-        
+
         # Prepare worker arguments - also track task info for error handling
         worker_args = [
             (program_path, task.benchmark, task.dataset_name, config_dict)
             for task in batch
         ]
         task_info = {task.dataset_name: task for task in batch}
-        
+
         # Run batch in parallel
         batch_results = []
         with ProcessPoolExecutor(max_workers=len(batch)) as executor:
@@ -1216,31 +1396,55 @@ def evaluate_parallel(
                 executor.submit(_worker_evaluate, args): args[2]  # dataset_name
                 for args in worker_args
             }
-            
+
             for future in as_completed(futures):
                 dataset_name = futures[future]
                 task = task_info[dataset_name]
                 try:
                     result = future.result(timeout=1800)  # 30 min timeout
-                    
+
                     # Handle combined results (returns list of DatasetResults)
                     if isinstance(result, list):
                         for r in result:
                             batch_results.append(r)
+                            results.append(r)
+                            _collect_per_query(r, per_query_data)
                             if verbose:
                                 status = "OK" if r.error is None else f"ERROR: {r.error}"
                                 print(f"  {r.name}: {status}")
+
+                            # Incremental save: save each dataset result immediately
+                            if save_path:
+                                partial = aggregate_results([r])
+                                _merge_partial_into(existing, partial)
+                                tmp_path = save_path.with_suffix(save_path.suffix + ".tmp")
+                                with open(tmp_path, "w") as f:
+                                    json.dump(existing, f, indent=2)
+                                tmp_path.replace(save_path)
+                                _save_per_query_incremental(save_path, per_query_data)
                     else:
                         batch_results.append(result)
+                        results.append(result)
+                        _collect_per_query(result, per_query_data)
                         if verbose:
                             status = "OK" if result.error is None else f"ERROR: {result.error}"
                             print(f"  {result.name}: {status}")
+
+                        # Incremental save: save each dataset result immediately
+                        if save_path:
+                            partial = aggregate_results([result])
+                            _merge_partial_into(existing, partial)
+                            tmp_path = save_path.with_suffix(save_path.suffix + ".tmp")
+                            with open(tmp_path, "w") as f:
+                                json.dump(existing, f, indent=2)
+                            tmp_path.replace(save_path)
+                            _save_per_query_incremental(save_path, per_query_data)
                 except Exception as e:
                     # Handle timeout or other errors - use correct prefix
                     if task.benchmark == "trec_dl_combined":
                         # Combined task failed - return error for both DL19 and DL20
                         for name in ["trec_dl_dl19", "trec_dl_dl20"]:
-                            batch_results.append(DatasetResult(
+                            error_result = DatasetResult(
                                 name=name,
                                 ndcg_at_10=0.0,
                                 recall_at_100=0.0,
@@ -1249,10 +1453,23 @@ def evaluate_parallel(
                                 num_docs=0,
                                 num_queries=0,
                                 error=f"Worker failed: {e}",
-                            ))
+                            )
+                            batch_results.append(error_result)
+                            results.append(error_result)
+                            if verbose:
+                                print(f"  {error_result.name}: ERROR: {error_result.error}")
+
+                            # Incremental save: save error result immediately
+                            if save_path:
+                                partial = aggregate_results([error_result])
+                                _merge_partial_into(existing, partial)
+                                tmp_path = save_path.with_suffix(save_path.suffix + ".tmp")
+                                with open(tmp_path, "w") as f:
+                                    json.dump(existing, f, indent=2)
+                                tmp_path.replace(save_path)
                     else:
                         full_name = f"{task.benchmark}_{dataset_name}"
-                        batch_results.append(DatasetResult(
+                        error_result = DatasetResult(
                             name=full_name,
                             ndcg_at_10=0.0,
                             recall_at_100=0.0,
@@ -1261,12 +1478,26 @@ def evaluate_parallel(
                             num_docs=0,
                             num_queries=0,
                             error=f"Worker failed: {e}",
-                        ))
-        
-        results.extend(batch_results)
-    
-    # Aggregate results into flat dictionary
-    return aggregate_results(results)
+                        )
+                        batch_results.append(error_result)
+                        results.append(error_result)
+                        if verbose:
+                            print(f"  {error_result.name}: ERROR: {error_result.error}")
+
+                        # Incremental save: save error result immediately
+                        if save_path:
+                            partial = aggregate_results([error_result])
+                            _merge_partial_into(existing, partial)
+                            tmp_path = save_path.with_suffix(save_path.suffix + ".tmp")
+                            with open(tmp_path, "w") as f:
+                                json.dump(existing, f, indent=2)
+                            tmp_path.replace(save_path)
+
+    # Return the accumulated existing dict if we were saving, otherwise aggregate from results
+    if save_path and existing:
+        return existing
+    else:
+        return aggregate_results(results)
 
 
 def aggregate_results(results: list[DatasetResult]) -> dict[str, Any]:
@@ -1315,6 +1546,7 @@ def aggregate_results(results: list[DatasetResult]) -> dict[str, Any]:
     output["avg_recall@100"] = avg_recall
     # Zero score if any dataset failed (avoids reward hacking from partial/crashed runs)
     output["combined_score"] = 0.0 if datasets_failed > 0 else (0.8 * avg_recall + 0.2 * avg_ndcg)
+    output["average_score"] = 0.0 if datasets_failed > 0 else (0.5 * avg_ndcg + 0.5 * avg_recall)
     
     # Timing
     output["total_index_time_ms"] = total_index_time
@@ -1468,7 +1700,9 @@ Output includes:
         help="Print progress"
     )
     args = parser.parse_args()
-    
+
+    from pathlib import Path
+
     config = EvalConfig(
         sample_queries=args.sample_queries if args.sample_queries > 0 else None,
         seed=args.seed,
@@ -1479,44 +1713,153 @@ Output includes:
         include_beir=not (args.only_bright or args.only_trec_dl),
         include_trec_dl=not (args.only_bright or args.only_beir),
     )
-    
-    results = evaluate_parallel(args.program_path, config, verbose=args.verbose)
-    
-    # Add metadata
-    results["_metadata"] = {
-        "program_path": args.program_path,
-        "tokenizer": args.tokenizer,
-        "sample_queries": args.sample_queries if args.sample_queries > 0 else "all",
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-    }
-    
+
+    save_path = Path(args.save) if args.save else None
+    if save_path:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Smart incremental evaluation: detect missing and failed datasets
+    if save_path and save_path.is_file():
+        with open(save_path) as f:
+            existing = json.load(f)
+
+        # Get all expected datasets for this evaluation
+        all_tasks = get_dataset_tasks(config)
+        expected_datasets = {task.full_name for task in all_tasks}
+
+        # trec_dl_combined is a virtual task that produces trec_dl_dl19 + trec_dl_dl20.
+        # Expand it so we compare against the actual result keys.
+        if "trec_dl_combined" in expected_datasets:
+            expected_datasets.discard("trec_dl_combined")
+            expected_datasets.update({"trec_dl_dl19", "trec_dl_dl20"})
+
+        # Get completed and failed datasets from existing results
+        completed_datasets = _get_all_prefixes(existing)
+        failed_datasets = _get_failed_datasets(existing)
+        completed_datasets -= failed_datasets
+
+        # Datasets to run = (expected but not completed) union failed
+        missing_datasets = expected_datasets - completed_datasets - failed_datasets
+        to_run = missing_datasets | failed_datasets
+
+        # Also check per-query companion file: if a dataset is "completed" in the
+        # main JSON but missing from the per-query file, we need to rerun it so
+        # that per-query scores are saved for significance testing.
+        pq_path = save_path.with_name(save_path.stem + "_perquery.json")
+        pq_completed: set[str] = set()
+        if pq_path.is_file():
+            try:
+                with open(pq_path) as f:
+                    pq_data = json.load(f)
+                pq_completed = set(pq_data.keys())
+            except Exception:
+                pass
+        missing_perquery = (completed_datasets - failed_datasets) - pq_completed
+        if missing_perquery:
+            to_run |= missing_perquery
+
+        if to_run:
+            # Split full dataset names into benchmark-specific lists
+            bright_to_run = []
+            beir_to_run = []
+            trec_dl_to_run = []
+
+            for full_name in to_run:
+                if full_name.startswith("bright_"):
+                    bright_to_run.append(full_name[7:])  # Remove "bright_" prefix
+                elif full_name.startswith("beir_"):
+                    beir_to_run.append(full_name[5:])  # Remove "beir_" prefix
+                elif full_name.startswith("trec_dl_"):
+                    # Handle both "trec_dl_combined" and "trec_dl_dl19", etc.
+                    if full_name == "trec_dl_combined":
+                        trec_dl_to_run = ["dl19", "dl20"]
+                    else:
+                        trec_dl_to_run.append(full_name[8:])  # Remove "trec_dl_" prefix
+
+            # Create modified config with only the datasets to run
+            config = EvalConfig(
+                sample_queries=args.sample_queries if args.sample_queries > 0 else None,
+                seed=args.seed,
+                tokenizer=args.tokenizer,
+                max_workers=args.max_workers,
+                threads_per_worker=args.threads_per_worker,
+                include_bright=bool(bright_to_run),
+                include_beir=bool(beir_to_run),
+                include_trec_dl=bool(trec_dl_to_run),
+                bright_datasets=bright_to_run if bright_to_run else None,
+                beir_datasets=beir_to_run if beir_to_run else None,
+                trec_dl_datasets=trec_dl_to_run if trec_dl_to_run else None,
+            )
+
+            if args.verbose:
+                print(f"Loaded existing results with {len(completed_datasets)} completed dataset(s)", file=sys.stderr)
+                print(f"Running {len(to_run)} dataset(s):", file=sys.stderr)
+                if failed_datasets:
+                    print(f"  - {len(failed_datasets)} failed (rerunning): {sorted(failed_datasets)}", file=sys.stderr)
+                if missing_datasets:
+                    print(f"  - {len(missing_datasets)} missing (new): {sorted(missing_datasets)}", file=sys.stderr)
+                if missing_perquery:
+                    print(f"  - {len(missing_perquery)} missing per-query data: {sorted(missing_perquery)}", file=sys.stderr)
+        else:
+            if args.verbose:
+                print(f"Results exist with all {len(expected_datasets)} dataset(s) completed successfully.", file=sys.stderr)
+                if pq_path.is_file():
+                    print(f"Per-query data also complete ({len(pq_completed)} datasets).", file=sys.stderr)
+            print(json.dumps(existing, indent=2))
+            sys.exit(0)
+
+    results = evaluate_parallel(args.program_path, config, verbose=args.verbose, save_path=save_path)
+
     # Print summary
     if args.verbose:
-        print("\n" + "=" * 60)
-        print("SUMMARY")
-        print("=" * 60)
-        print(f"Combined Score: {results['combined_score']:.4f}")
-        print(f"  avg_nDCG@10:    {results['avg_ndcg@10']:.4f}")
-        print(f"  avg_Recall@100: {results['avg_recall@100']:.4f}")
-        print("Timing:")
-        print(f"  Index: {results['total_index_time_ms'] / 1000:.1f}s")
-        print(f"  Query: {results['total_query_time_ms'] / 1000:.1f}s")
-        print(f"  Total: {results['total_time_ms'] / 1000:.1f}s")
-        print(f"Datasets: {results['datasets_evaluated']} OK, {results['datasets_failed']} failed")
-        print("=" * 60)
-    
-    # Save to file if requested
-    if args.save:
-        from pathlib import Path
-        save_path = Path(args.save)
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(save_path, "w") as f:
-            json.dump(results, f, indent=2)
+        print("\n" + "=" * 60, file=sys.stderr)
+        print("SUMMARY", file=sys.stderr)
+        print("=" * 60, file=sys.stderr)
+        print(f"Combined Score: {results['combined_score']:.4f}", file=sys.stderr)
+        print(f"Average Score:  {results.get('average_score', 0.0):.4f}", file=sys.stderr)
+        print(f"  avg_nDCG@10:    {results['avg_ndcg@10']:.4f}", file=sys.stderr)
+        print(f"  avg_Recall@100: {results['avg_recall@100']:.4f}", file=sys.stderr)
+        print("Timing:", file=sys.stderr)
+        print(f"  Index: {results['total_index_time_ms'] / 1000:.1f}s", file=sys.stderr)
+        print(f"  Query: {results['total_query_time_ms'] / 1000:.1f}s", file=sys.stderr)
+        print(f"  Total: {results['total_time_ms'] / 1000:.1f}s", file=sys.stderr)
+        print(f"Datasets: {results['datasets_evaluated']} OK, {results['datasets_failed']} failed", file=sys.stderr)
+        print("=" * 60, file=sys.stderr)
+
+    # Final save with metadata
+    if save_path:
+        # Results were already written incrementally during evaluation
+        # Final write ensures aggregates are up-to-date and metadata is added
+        if save_path.is_file():
+            with open(save_path) as f:
+                final_existing = json.load(f)
+            # Merge any remaining results (should be none, but ensure consistency)
+            if results != final_existing:
+                for key, value in results.items():
+                    if key not in ("_metadata",):
+                        final_existing[key] = value
+        else:
+            final_existing = results
+        # Add/update metadata
+        final_existing["_metadata"] = {
+            "program_path": args.program_path,
+            "tokenizer": args.tokenizer,
+            "sample_queries": args.sample_queries if args.sample_queries > 0 else "all",
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "evaluator": "evaluator_ql_parallel",
+        }
+        tmp_path = save_path.with_suffix(save_path.suffix + ".tmp")
+        with open(tmp_path, "w") as f:
+            json.dump(final_existing, f, indent=2)
+        tmp_path.replace(save_path)
         if args.verbose:
-            print(f"\nResults saved to: {save_path}")
-    
-    # Output JSON to stdout
-    print(json.dumps(results, indent=2))
+            pq_path = save_path.with_name(save_path.stem + "_perquery.json")
+            print(f"Final save: {save_path}", file=sys.stderr)
+            if pq_path.is_file():
+                print(f"Per-query data: {pq_path}", file=sys.stderr)
+        print(json.dumps(final_existing, indent=2))
+    else:
+        print(json.dumps(results, indent=2))
 
 
 if __name__ == "__main__":
