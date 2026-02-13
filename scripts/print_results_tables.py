@@ -11,7 +11,19 @@ Tie handling:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+
+# Datasets used during evolution (seen); excluded with --only-unseen
+SEEN_DATASETS: set[str] = {
+    # BEIR
+    "beir_arguana", "beir_fiqa", "beir_nfcorpus", "beir_scifact",
+    "beir_scidocs", "beir_trec-covid",
+    # BRIGHT
+    "bright_biology", "bright_earth_science", "bright_economics",
+    "bright_pony", "bright_stackoverflow",
+    "bright_theoremqa_theorems",
+}
 
 # ANSI: best = bold bright green, 2nd = light yellow
 GREEN = "\033[1;92m"  # bold bright green
@@ -64,9 +76,17 @@ def _mark_best_and_second(values_by_row: list[float | None]) -> tuple[list[str],
 
 
 def main() -> None:
+    only_unseen = "--only-unseen" in sys.argv
+    args = [a for a in sys.argv[1:] if a != "--only-unseen"]
+    name_filter = args[0].lower() if args else None
+
     repo_root = Path(__file__).resolve().parent.parent
     results_dir = repo_root / "results"
-    json_files = sorted(f for f in results_dir.iterdir() if f.suffix == ".json" and f.is_file())
+    json_files = sorted(
+        f for f in results_dir.iterdir()
+        if f.suffix == ".json" and f.is_file()
+        and (name_filter is None or name_filter in f.name.lower())
+    )
 
     if not json_files:
         print("No JSON files in results/")
@@ -94,7 +114,7 @@ def main() -> None:
                     zero_count += 1
         datasets_evaluated = data.get("datasets_evaluated", 0)
         # Exclude if >2 zeros OR if evaluated < 20 datasets (incomplete evaluation)
-        if zero_count <= 2 and datasets_evaluated >= 20:
+        if zero_count <= 5 and datasets_evaluated >= 20:
             filtered_data[fname] = data
 
     all_data = filtered_data
@@ -119,6 +139,11 @@ def main() -> None:
     bright_list = sorted(bright_prefixes)
     beir_list = sorted(beir_prefixes)
     dl_list = sorted(dl_prefixes)
+
+    if only_unseen:
+        bright_list = [p for p in bright_list if p not in SEEN_DATASETS]
+        beir_list = [p for p in beir_list if p not in SEEN_DATASETS]
+        dl_list = [p for p in dl_list if p not in SEEN_DATASETS]
 
     def short_name(prefix: str, benchmark: str) -> str:
         if benchmark == "bright":
@@ -190,21 +215,32 @@ def main() -> None:
         print()
 
     # Benchmark tables
-    print_table("BRIGHT — nDCG@10", bright_list, "bright", "ndcg")
-    print_table("BRIGHT — Recall@100", bright_list, "bright", "recall")
-    print_table("BEIR — nDCG@10", beir_list, "beir", "ndcg")
-    print_table("BEIR — Recall@100", beir_list, "beir", "recall")
-    print_table("TREC DL (dl19, dl20) — nDCG@10", dl_list, "dl", "ndcg")
-    print_table("TREC DL (dl19, dl20) — Recall@100", dl_list, "dl", "recall")
+    tag = " (unseen)" if only_unseen else ""
+    print_table(f"BRIGHT{tag} — nDCG@10", bright_list, "bright", "ndcg")
+    print_table(f"BRIGHT{tag} — Recall@100", bright_list, "bright", "recall")
+    print_table(f"BEIR{tag} — nDCG@10", beir_list, "beir", "ndcg")
+    print_table(f"BEIR{tag} — Recall@100", beir_list, "beir", "recall")
+    print_table(f"TREC DL (dl19, dl20){tag} — nDCG@10", dl_list, "dl", "ndcg")
+    print_table(f"TREC DL (dl19, dl20){tag} — Recall@100", dl_list, "dl", "recall")
 
-    # Overall tables: avg_ndcg@10 and avg_recall@100 (from JSON)
+    # Overall tables
     file_order = sorted(all_data.keys())
+    all_prefixes = bright_list + beir_list + dl_list
+    n_datasets = len(all_prefixes)
+
     ndcg_vals: list[float | None] = []
     recall_vals: list[float | None] = []
     for fname in file_order:
         d = all_data[fname]
-        ndcg_vals.append(d.get("avg_ndcg@10"))
-        recall_vals.append(d.get("avg_recall@100"))
+        if only_unseen:
+            # Recompute from filtered datasets
+            _, n_macro = get_values(d, all_prefixes, "ndcg")
+            _, r_macro = get_values(d, all_prefixes, "recall")
+            ndcg_vals.append(n_macro)
+            recall_vals.append(r_macro)
+        else:
+            ndcg_vals.append(d.get("avg_ndcg@10"))
+            recall_vals.append(d.get("avg_recall@100"))
 
     def print_overall(title: str, values: list[float | None]) -> None:
         print()
@@ -229,8 +265,9 @@ def main() -> None:
             print(f"  {fname[:ROW_W]:<{ROW_W}} {cell}")
         print()
 
-    print_overall("Overall — avg nDCG@10 (all datasets)", ndcg_vals)
-    print_overall("Overall — avg Recall@100 (all datasets)", recall_vals)
+    ds_label = f"{n_datasets} unseen datasets" if only_unseen else "all datasets"
+    print_overall(f"Overall — avg nDCG@10 ({ds_label})", ndcg_vals)
+    print_overall(f"Overall — avg Recall@100 ({ds_label})", recall_vals)
 
     # avg(Recall@100, nDCG@10)
     avg_both: list[float | None] = []
@@ -240,7 +277,7 @@ def main() -> None:
             avg_both.append((float(r) + float(n)) / 2.0)
         else:
             avg_both.append(None)
-    print_overall("Overall — avg(Recall@100, nDCG@10)", avg_both)
+    print_overall(f"Overall — avg(Recall@100, nDCG@10) ({ds_label})", avg_both)
 
     # optimization target: 0.8*R@100 + 0.2*nDCG@10
     opt_target: list[float | None] = []
@@ -250,7 +287,7 @@ def main() -> None:
             opt_target.append(0.8 * float(r) + 0.2 * float(n))
         else:
             opt_target.append(None)
-    print_overall("Overall — optimization target (0.8×R@100 + 0.2×nDCG@10)", opt_target)
+    print_overall(f"Overall — optimization target (0.8×R@100 + 0.2×nDCG@10) ({ds_label})", opt_target)
 
 
 if __name__ == "__main__":
