@@ -2,6 +2,10 @@
 
 Evolving BM25 scoring functions with [OpenEvolve](https://github.com/algorithmicsuperintelligence/openevolve). Evaluated on the [BRIGHT](https://huggingface.co/datasets/xlangai/BRIGHT) and [BEIR](https://github.com/beir-cellar/beir) benchmarks.
 
+<p align="center">
+  <img src="results/head_figure.png" width="700" alt="Evolution curves for BM25 and QL-Dir seed programs showing monotonic improvement in combined score over evolution steps.">
+</p>
+
 ## Quick Start
 
 ```bash
