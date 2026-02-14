@@ -42,9 +42,9 @@ indices, scores = bm25.rank(tokenizer("protein folding"), top_k=10)
 ### Preset Configurations
 
 ```python
-BM25Config.evolved()    # Best overall (evolved TF + IDF, k1=0.9, b=0.4)
-BM25Config.lucene()     # Lucene/Pyserini compatible
-BM25Config.classic()    # Robertson BM25 (k1=1.5, b=0.75)
+BM25Config.evolved()    # Best overall (evolved TF + IDF, k1=1.5, b=0.75)
+BM25Config.lucene()     # Lucene/Pyserini compatible (k1=0.9, b=0.4)
+BM25Config.classic()    # Robertson BM25 (k1=1.2, b=0.75)
 BM25Config.bm25l()      # BM25L (better for long documents)
 BM25Config.bm25_plus()  # BM25+ (lower-bound guarantee)
 ```
@@ -69,52 +69,54 @@ uv run python evaluator.py src/ranking_evolved/bm25_classic.py \
 
 Options: `--tokenizer lucene|simple`, `--k 10`, `--sample-queries N`
 
-### Running Baselines
-
-```bash
-# Compare all implementations and save to results/baselines/
-./run_baselines.sh
-```
-
 ## Running OpenEvolve
 
 ```bash
 export EVAL_EXCLUDE_DATASETS="dl19,dl20,fever,climate-fever,hotpotqa,dbpedia-entity,nq,quora,webis-touche2020,cqadupstack,leetcode,aops,theoremqa_questions,robotics,psychology,sustainable_living"
 export OPENAI_API_KEY="your-key"
 
-# Three seed program strategies
+# BM25 seeds
 uv run python -m openevolve.cli src/ranking_evolved/bm25_constrained_fast.py evaluator_parallel.py \
-  --config openevolve_config_constrained_fast.yaml --output openevolve_output_constrained_fast
+  --config openevolve_config_constrained.yaml --output openevolve_output_constrained
 
 uv run python -m openevolve.cli src/ranking_evolved/bm25_composable_fast.py evaluator_parallel.py \
-  --config openevolve_config_composable.yaml --output openevolve_output_composable_fast
+  --config openevolve_config_composable.yaml --output openevolve_output_composable
 
 uv run python -m openevolve.cli src/ranking_evolved/bm25_freeform_fast.py evaluator_parallel.py \
-  --config openevolve_config_freeform.yaml --output openevolve_output_freeform_fast
-```
+  --config openevolve_config_freeform.yaml --output openevolve_output_freeform
 
-See [docs/OPENEVOLVE_RUN_GUIDE.md](docs/OPENEVOLVE_RUN_GUIDE.md) for details on prompts, outputs, and the evolution database.
+# QL seed
+uv run python -m openevolve.cli src/ranking_evolved/ql_freeform_fast.py evaluator_ql_parallel.py \
+  --config openevolve_config_QL_freeform.yaml --output openevolve_output_ql_freeform
+```
 
 ## Project Structure
 
 ```
 ranking-evolved/
 ├── src/ranking_evolved/
-│   ├── bm25.py                    # Core BM25 implementation
+│   ├── bm25.py                    # Core BM25 implementation (tokenizers, IDF/TF strategies, scoring)
 │   ├── bm25_constrained_fast.py   # OpenEvolve seed: constrained search space
 │   ├── bm25_composable_fast.py    # OpenEvolve seed: composable primitives
 │   ├── bm25_freeform_fast.py      # OpenEvolve seed: freeform edits
 │   ├── bm25_classic.py            # Vanilla Robertson BM25
+│   ├── bm25l_fast.py              # BM25L variant seed
+│   ├── bm25plus_fast.py           # BM25+ variant seed
+│   ├── bm25adpt_fast.py           # BM25-Adaptive variant seed
+│   ├── bm25t_fast.py              # BM25T variant seed
+│   ├── ql_JM.py                   # Query Likelihood with Jelinek-Mercer smoothing
+│   ├── ql_freeform_fast.py        # OpenEvolve seed: QL freeform edits
 │   ├── metrics.py                 # NDCG, MAP, MRR, precision, recall
 │   └── datasets.py                # Dataset loading utilities
 ├── evaluator.py                   # Unified multi-benchmark evaluator
 ├── evaluator_parallel.py          # Parallel evaluator (used by OpenEvolve)
+├── evaluator_ql_parallel.py       # Parallel evaluator for QL models
 ├── evaluator_bright.py            # BRIGHT-only evaluator
 ├── evaluator_beir.py              # BEIR-only evaluator
-├── benchmarks/                    # Full benchmark runners
+├── scripts/                       # Plotting and result printing scripts
+├── results/                       # Evaluation result JSONs and figures
 ├── tests/                         # Unit tests
 ├── docs/                          # Detailed results and analysis
-│   └── results.md                 # Full evaluation tables and scoring details
 └── references/                    # BM25 formula derivations
 ```
 
@@ -132,5 +134,6 @@ uv run mypy src/
 - [OpenEvolve](https://github.com/algorithmicsuperintelligence/openevolve) — Evolutionary algorithm framework
 - [BRIGHT](https://huggingface.co/datasets/xlangai/BRIGHT) — Benchmark for reasoning-intensive retrieval
 - [BEIR](https://github.com/beir-cellar/beir) — Zero-shot information retrieval benchmark
+- [TREC DL](https://microsoft.github.io/msmarco/TREC-Deep-Learning) — TREC Deep Learning Track 2019/2020
 - [BM25 Formulas](references/bm25_formulas.md) — Detailed formula derivations
 - [Detailed Results](docs/results.md) — Full evaluation tables, scoring component details, hyperparameter search
