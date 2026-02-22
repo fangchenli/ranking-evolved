@@ -1,6 +1,6 @@
-# ranking-evolved
-
-Evolving BM25 scoring functions with [OpenEvolve](https://github.com/algorithmicsuperintelligence/openevolve). Evaluated on [BRIGHT](https://huggingface.co/datasets/xlangai/BRIGHT), [BEIR](https://github.com/beir-cellar/beir), and [TREC DL 2019/2020](https://microsoft.github.io/msmarco/TREC-Deep-Learning) benchmarks.
+# RankEvolve: Automating the Discovery of Retrieval Algorithms via LLM-Driven Evolution
+<!-- 
+Evolving retrieval algorithm with [OpenEvolve](https://github.com/algorithmicsuperintelligence/openevolve). Evaluated on [BRIGHT](https://huggingface.co/datasets/xlangai/BRIGHT), [BEIR](https://github.com/beir-cellar/beir), and [TREC DL 2019/2020](https://microsoft.github.io/msmarco/TREC-Deep-Learning) benchmarks. -->
 
 <p align="center">
   <img src="results/head_figure.png" width="700" alt="Evolution curves for BM25 and QL-Dir seed programs showing monotonic improvement in combined score over evolution steps.">
@@ -19,7 +19,7 @@ uv run python evaluator.py src/ranking_evolved/bm25_composable_fast.py --bright 
 uv run python evaluator.py src/ranking_evolved/bm25_composable_fast.py --beir scifact
 ```
 
-## Usage
+<!-- ## Usage
 
 ```python
 from ranking_evolved.bm25 import BM25Unified, BM25Config, Corpus, LuceneTokenizer
@@ -46,8 +46,8 @@ BM25Config.evolved()    # Best overall (evolved TF + IDF, k1=1.5, b=0.75)
 BM25Config.lucene()     # Lucene/Pyserini compatible (k1=0.9, b=0.4)
 BM25Config.classic()    # Robertson BM25 (k1=1.2, b=0.75)
 BM25Config.bm25l()      # BM25L (better for long documents)
-BM25Config.bm25_plus()  # BM25+ (lower-bound guarantee)
-```
+BM25Config.bm25_plus()  # BM25+ (lower-bound guarantee) 
+``` --> 
 
 ## Evaluation
 
@@ -69,7 +69,7 @@ uv run python evaluator.py src/ranking_evolved/bm25_classic.py \
 
 Options: `--tokenizer lucene|simple`, `--k 10`, `--sample-queries N`
 
-## Running OpenEvolve
+## Evolve
 
 ```bash
 export EVAL_EXCLUDE_DATASETS="dl19,dl20,fever,climate-fever,hotpotqa,dbpedia-entity,nq,quora,webis-touche2020,cqadupstack,leetcode,aops,theoremqa_questions,robotics,psychology,sustainable_living"
@@ -90,7 +90,11 @@ uv run python -m openevolve.cli src/ranking_evolved/ql_freeform_fast.py evaluato
   --config openevolve_config_QL_freeform.yaml --output openevolve_output_ql_freeform
 ```
 
-## Project Structure
+
+
+
+
+<!-- ## Project Structure
 
 ```
 ranking-evolved/
@@ -118,22 +122,44 @@ ranking-evolved/
 ├── tests/                         # Unit tests
 ├── docs/                          # Detailed results and analysis
 └── references/                    # BM25 formula derivations
-```
+``` -->
 
-## Development
+<!-- ## Development
 
 ```bash
 uv sync --group dev
 uv run pytest
 uv run ruff format
 uv run mypy src/
-```
+``` -->
 
 ## References
 
+**Evolved programs:**
+- [BM25 Freeform step 293](evolved_programs/bm25_freeform_step293.py) — Best evolved BM25, 300-step run
+- [BM25 Freeform step 177](evolved_programs/bm25_freeform_step177.py) — Best evolved BM25, 200-step run
+- [BM25 Constrained step 115](evolved_programs/bm25_constrained_step115.py) — Best constrained BM25, 200-step run
+- [BM25 Composable step 185](evolved_programs/bm25_composable_step185.py) — Best composable BM25, 200-step run
+- [QL Freeform step 182](evolved_programs/ql_freeform_step182.py) — Best evolved QL, 200-step run
+
+**Benchmarks & tools:**
 - [OpenEvolve](https://github.com/algorithmicsuperintelligence/openevolve) — Evolutionary algorithm framework
 - [BRIGHT](https://huggingface.co/datasets/xlangai/BRIGHT) — Benchmark for reasoning-intensive retrieval
 - [BEIR](https://github.com/beir-cellar/beir) — Zero-shot information retrieval benchmark
 - [TREC DL](https://microsoft.github.io/msmarco/TREC-Deep-Learning) — TREC Deep Learning Track 2019/2020
-- [BM25 Formulas](references/bm25_formulas.md) — Detailed formula derivations
-- [Detailed Results](docs/results.md) — Full evaluation tables, scoring component details, hyperparameter search
+<!-- - [BM25 Formulas](references/bm25_formulas.md) — Detailed formula derivations
+- [Detailed Results](docs/results.md) — Full evaluation tables, scoring component details, hyperparameter search -->
+
+## Cite RankEvolve
+
+```bibtex
+@misc{nian2026rankevolveautomatingdiscoveryretrieval,
+      title={RankEvolve: Automating the Discovery of Retrieval Algorithms via LLM-Driven Evolution},
+      author={Jinming Nian and Fangchen Li and Dae Hoon Park and Yi Fang},
+      year={2026},
+      eprint={2602.16932},
+      archivePrefix={arXiv},
+      primaryClass={cs.IR},
+      url={https://arxiv.org/abs/2602.16932},
+}
+```
