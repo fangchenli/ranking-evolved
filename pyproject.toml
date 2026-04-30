@@ -18,6 +18,9 @@ dependencies = [
     "optuna>=4.0.0",
 ]
 
+[project.scripts]
+ranking-evolved = "ranking_evolved.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
