@@ -1,0 +1,194 @@
+# Latency-aware freeform evolution.
+#
+# Same task as `freeform.yaml` (BM25 freeform seed, evaluator_parallel.py,
+# MAP-Elites + 3 islands), but the optimization target adds a per-query
+# latency penalty against the seed program's median query latency:
+#
+#   ratio_d         = candidate_query_latency_median_ms_d
+#                     / baseline_query_latency_median_ms_d
+#   latency_score_d = 0  if ratio_d > hard_slowdown_threshold (=5.0)
+#                     1 / (1 + ratio_d) otherwise
+#   combined_score  = 0.45 * avg_recall@1000
+#                   + 0.20 * avg_ndcg@10
+#                   + 0.35 * mean(latency_score_d)
+#
+# The framework evaluates the seed once before the loop to capture the
+# baseline median per-query latency per dataset; that file is written to
+# `<run_dir>/baseline_latency.json` and reused for every candidate.
+#
+# Run:
+#   export OPENAI_API_KEY=...
+#   export EVAL_EXCLUDE_DATASETS="dl19,dl20,fever,climate-fever,hotpotqa,..."
+#   uv run ranking-evolved run --config tasks/bm25/configs/freeform_latency_aware.yaml --replay --max-iterations 10
+
+task:
+  seed: tasks/bm25/seeds/freeform.py
+  evaluator: tasks/bm25/evaluator.py
+
+evolution:
+  max_iterations: 10
+  random_seed: 42
+  capture_replay: true
+
+search:
+  algorithm: map_elites_islands
+  population_size: 30
+  archive_size: 6
+  num_islands: 3
+  migration_interval: 8
+  migration_rate: 0.15
+  feature_dimensions:
+    - complexity
+    - diversity
+  feature_bins: 4
+
+proposer:
+  kind: openai_responses
+  models:
+    - {name: "gpt-5.2", weight: 1.0}
+  api_base: "https://api.openai.com/v1"
+  api_key: "${OPENAI_API_KEY}"
+  temperature: 0.85
+  max_tokens: 32768
+  reasoning_effort: low
+  timeout: 180
+  retries: 3
+
+prompt:
+  diff_based: true
+  num_top_programs: 3
+  num_diverse_programs: 2
+  include_artifacts: true
+  system_message: |
+    You are discovering a new lexical retrieval algorithm.
+
+    The seed program is only a starting point. It exposes a document representation, query representation, scoring function, and ranking interface. Your job is to invent, refine, or restructure lexical retrieval methods that improve retrieval effectiveness while keeping query latency under control.
+
+    ## Objective
+
+    Optimize the evaluator's combined_score. The current target is latency-aware:
+
+    combined_score =
+        0.45 * avg_recall@1000
+      + 0.20 * avg_ndcg@10
+      + 0.35 * avg_latency_score
+
+    where latency is measured relative to the seed baseline per dataset:
+
+    latency_ratio_d = candidate_median_query_latency_ms_d / seed_median_query_latency_ms_d
+    latency_score_d = 1 / (1 + latency_ratio_d)
+
+    avg_latency_score is averaged across datasets. A candidate that is more than 5x slower than the seed on any dataset receives a latency penalty.
+
+    Retrieval effectiveness is still the main scientific goal. Recall@1000 matters because this is a first-stage retriever that should produce strong candidate sets for later reranking. nDCG@10 matters because the top of the ranking should not collapse. Query latency also matters because an algorithm that is much slower than the seed is not useful, even if it gains some recall.
+
+    ## Design goal
+
+    Look for elegant and general lexical signals, not small parameter tweaks. BM25 is only a starting point, not a boundary.
+
+    Good ideas may involve:
+    - new notions of term rarity, discriminativeness, or specificity
+    - better document length, verbosity, or focus normalization
+    - query-term weighting, deduplication, or term interaction signals
+    - document-side statistics that can be precomputed at indexing time
+    - efficient approximations that improve recall without scanning too much extra data
+    - restructuring the ranking pipeline if it gives a better effectiveness-latency tradeoff
+
+    Prefer coherent algorithmic changes with a clear reason. Avoid adding many unrelated constants. Do not overfit to one dataset unless the metrics clearly justify it.
+
+    If progress appears stagnant, do not stay trapped in local edits. You may rewrite major parts of the algorithm, redesign the representation, restructure the scoring path, or replace the core formula entirely, as long as the evaluator contract is preserved.
+
+    ## What you can change
+
+    You may change almost any internal implementation detail, including:
+
+    1. Config parameters and new hyperparameters.
+    2. idf(df, N), including alternative rarity or discriminativeness functions.
+    3. DocumentRepr and document-side precomputed statistics.
+    4. QueryRepr and query-side weighting or transformations.
+    5. retrieval_score(...), the scalar relevance function.
+    6. score_document(...), if the scoring pipeline changes.
+    7. BM25._score_candidates_vectorized(...), which must stay consistent with rank().
+    8. BM25.rank(...), if you need a more efficient top-k path.
+
+    Keep retrieval_score and the vectorized/ranking path semantically aligned. If you optimize rank() for speed, make sure score() remains reasonable and does not contradict the intended scoring method.
+
+    ## Evaluator contract
+
+    You must keep these public APIs:
+
+    - The module must expose BM25, Corpus, tokenize, and LuceneTokenizer.
+    - BM25.rank(query, top_k=None) must return (indices, scores).
+    - BM25.score(query, index) must return a float.
+    - Corpus must be constructible as Corpus(documents, ids).
+    - Do not use external services, training data, dense models, or non-lexical learned weights.
+    - Avoid NaNs, infinities, division by zero, and unstable behavior.
+
+    ## Editing format
+
+    Use SEARCH/REPLACE diffs only.
+
+    SEARCH must match the current code exactly.
+    REPLACE should contain the edited code.
+
+    Prefer one or a few coherent edits. If a larger rewrite is needed, do it cleanly and keep the public API intact.
+
+    ## How to use feedback
+
+    Use the per-dataset metrics to diagnose weaknesses.
+
+    Pay attention to:
+    - avg_recall@1000
+    - avg_ndcg@10
+    - avg_latency_score
+    - per-dataset recall and nDCG
+    - per-dataset latency ratio and latency penalty flags
+
+    If effectiveness improves but latency collapses, look for a simpler or more precomputed version of the idea. If latency improves but recall collapses, the method is too conservative. The best candidates improve the effectiveness-latency frontier, not just one side.
+
+evaluation:
+  timeout: 1800
+  isolation: inline
+  cascade: false
+
+# The latency-aware retrieval objective. The framework recomputes
+# `combined_score` from raw evaluator metrics + the seed-baseline latency.
+# `recall_k=1000` is also the `top_k` passed to `bm25.rank(...)` so that
+# the timed phase exercises the same retrieval depth as the recall metric.
+objective:
+  name: recall1000_ndcg10_latency
+  recall_k: 1000
+  ndcg_k: 10
+  weights:
+    recall: 0.45
+    ndcg: 0.20
+    latency: 0.35
+  latency:
+    enabled: true
+    baseline_source: seed
+    relative_to: seed
+    warmup_queries: 20
+    timed_repeats: 1
+    aggregation: median_per_query
+    ratio_transform: inverse_one_plus_ratio
+    hard_slowdown_threshold: 5.0
+    penalty_mode: zero_latency_score
+
+trace:
+  enabled: true
+  include_prompts: true
+
+logging:
+  level: INFO
+  debug_log: false
+  run_log_max_mb: 10
+  run_log_backups: 5
+  proposer_log_max_mb: 50
+  proposer_log_backups: 3
+  proposer_log_gzip: true
+  evaluator_log_max_mb: 25
+  evaluator_log_backups: 3
+
+run_store:
+  backend: sqlite
+  vacuum_on_close: true

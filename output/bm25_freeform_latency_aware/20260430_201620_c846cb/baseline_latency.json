@@ -1,0 +1,21 @@
+{
+  "objective": "recall1000_ndcg10_latency",
+  "recall_k": 1000,
+  "ndcg_k": 10,
+  "warmup_queries": 20,
+  "baseline_latency_by_dataset": {
+    "beir_arguana": 10.82454196875915,
+    "beir_fiqa": 7.60493753477931,
+    "beir_nfcorpus": 0.1848330721259117,
+    "beir_scidocs": 2.802520990371704,
+    "beir_scifact": 1.002917008008808,
+    "beir_trec-covid": 25.125229032710195,
+    "bright_biology": 15.704457997344434,
+    "bright_earth_science": 21.919646009337157,
+    "bright_economics": 15.367707936093211,
+    "bright_pony": 3.6682705394923687,
+    "bright_stackoverflow": 47.922166995704174,
+    "bright_theoremqa_theorems": 8.550645492505282
+  },
+  "captured_at": "2026-05-01T03:19:21.136684+00:00"
+}

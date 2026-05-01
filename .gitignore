@@ -211,6 +211,12 @@ openevolve/
 src/ranking_evolved/openevolve_output/
 output/
 reports/
+legacy/
+
+# Resolved configs may contain interpolated secrets (e.g. OPENAI_API_KEY)
+# Never commit them. Run dirs that need provenance can re-run from the
+# original config under tasks/<task>/configs/.
+config.resolved.yaml
 
 # BEIR benchmark data
 datasets/
