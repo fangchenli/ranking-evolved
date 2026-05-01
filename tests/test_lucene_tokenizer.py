@@ -7,7 +7,7 @@ the Porter stemmer implementation against known outputs.
 
 import pytest
 
-from ranking_evolved.bm25 import (
+from tasks.bm25.library import (
     ENGLISH_STOPWORDS,
     LuceneTokenizer,
     PorterStemmer,

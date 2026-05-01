@@ -1,165 +1,126 @@
-# RankEvolve: Automating the Discovery of Retrieval Algorithms via LLM-Driven Evolution
-<!-- 
-Evolving retrieval algorithm with [OpenEvolve](https://github.com/algorithmicsuperintelligence/openevolve). Evaluated on [BRIGHT](https://huggingface.co/datasets/xlangai/BRIGHT), [BEIR](https://github.com/beir-cellar/beir), and [TREC DL 2019/2020](https://microsoft.github.io/msmarco/TREC-Deep-Learning) benchmarks. -->
+# RankEvolve
+
+**Official implementation of the SIGIR 2026 short paper —**
+[*RankEvolve: Automating the Discovery of Retrieval Algorithms via LLM-Driven Evolution*](https://arxiv.org/abs/2602.16932)
+
+<sub>*<i>Jinming Nian, Fangchen Li, Dae Hoon Park, Yi Fang</i>*</sub>
+<br>
+<sub><i>Santa Clara University</i></sub>
+
+---
 
 <p align="center">
-  <img src="results/head_figure.png" width="700" alt="Evolution curves for BM25 and QL-Dir seed programs showing monotonic improvement in combined score over evolution steps.">
+  <img src="docs/figures/head_figure.png" alt="RankEvolve overview" width="780">
 </p>
 
-## Quick Start
+A modular framework for evolving retrieval algorithms with LLM-driven program
+synthesis. The original paper studies BM25 discovery on BRIGHT and BEIR; this
+repository generalises that workflow into a harness where every task — a seed
+program, an evaluator, and configs — lives in its own folder under `tasks/`.
+
+---
+
+## Setup
 
 ```bash
-# Install dependencies (Python >= 3.11)
+# 1. Clone.
+git clone https://github.com/<org>/ranking-evolved.git
+cd ranking-evolved
+
+# 2. Install with uv (https://docs.astral.sh/uv/).
+#    The lockfile is committed; uv sync gives you the exact pinned env.
 uv sync
 
-# Run evaluation on BRIGHT
-uv run python evaluator.py src/ranking_evolved/bm25_composable_fast.py --bright biology
-
-# Run evaluation on BEIR
-uv run python evaluator.py src/ranking_evolved/bm25_composable_fast.py --beir scifact
+# 3. Configure secrets.
+cp .env.example .env
+$EDITOR .env       # fill in OPENAI_API_KEY (and ANTHROPIC_API_KEY if you use it)
 ```
 
-<!-- ## Usage
+`.env` is auto-loaded from the config's directory (walking up to the repo
+root) before YAML `${VAR}` interpolation, so config files can reference
+`${OPENAI_API_KEY}` without exporting it manually.
 
-```python
-from ranking_evolved.bm25 import BM25Unified, BM25Config, Corpus, LuceneTokenizer
-
-tokenizer = LuceneTokenizer()
-
-docs = [
-    tokenizer("Protein folding is essential for cell function"),
-    tokenizer("Machine learning models for protein structure prediction"),
-    tokenizer("Cell biology and molecular mechanisms"),
-]
-corpus = Corpus(docs, ids=["doc1", "doc2", "doc3"])
-
-config = BM25Config.evolved()
-bm25 = BM25Unified(corpus, config)
-
-indices, scores = bm25.rank(tokenizer("protein folding"), top_k=10)
-```
-
-### Preset Configurations
-
-```python
-BM25Config.evolved()    # Best overall (evolved TF + IDF, k1=1.5, b=0.75)
-BM25Config.lucene()     # Lucene/Pyserini compatible (k1=0.9, b=0.4)
-BM25Config.classic()    # Robertson BM25 (k1=1.2, b=0.75)
-BM25Config.bm25l()      # BM25L (better for long documents)
-BM25Config.bm25_plus()  # BM25+ (lower-bound guarantee) 
-``` --> 
-
-## Evaluation
+For larger experiments you may also want:
 
 ```bash
-# Unified evaluator — mix BRIGHT and BEIR datasets
-uv run python evaluator.py src/ranking_evolved/bm25_classic.py \
-    --bright biology,earth_science --beir scifact,nfcorpus
-
-# All BRIGHT domains
-uv run python evaluator.py src/ranking_evolved/bm25_classic.py --bright all
-
-# All BEIR datasets
-uv run python evaluator.py src/ranking_evolved/bm25_classic.py --beir all
-
-# Fast iteration with query sampling
-uv run python evaluator.py src/ranking_evolved/bm25_classic.py \
-    --bright biology --sample-queries 20
-```
-
-Options: `--tokenizer lucene|simple`, `--k 10`, `--sample-queries N`
-
-## Evolve
-
-```bash
+# Skip the heaviest BEIR / TREC-DL datasets during evolution.
 export EVAL_EXCLUDE_DATASETS="dl19,dl20,fever,climate-fever,hotpotqa,dbpedia-entity,nq,quora,webis-touche2020,cqadupstack,leetcode,aops,theoremqa_questions,robotics,psychology,sustainable_living"
-export OPENAI_API_KEY="your-key"
-
-# BM25 seeds
-uv run python -m openevolve.cli src/ranking_evolved/bm25_constrained_fast.py evaluator_parallel.py \
-  --config openevolve_config_constrained.yaml --output openevolve_output_constrained
-
-uv run python -m openevolve.cli src/ranking_evolved/bm25_composable_fast.py evaluator_parallel.py \
-  --config openevolve_config_composable.yaml --output openevolve_output_composable
-
-uv run python -m openevolve.cli src/ranking_evolved/bm25_freeform_fast.py evaluator_parallel.py \
-  --config openevolve_config_freeform.yaml --output openevolve_output_freeform
-
-# QL seed
-uv run python -m openevolve.cli src/ranking_evolved/ql_freeform_fast.py evaluator_ql_parallel.py \
-  --config openevolve_config_QL_freeform.yaml --output openevolve_output_ql_freeform
 ```
 
-
-
-
-
-<!-- ## Project Structure
-
-```
-ranking-evolved/
-├── src/ranking_evolved/
-│   ├── bm25.py                    # Core BM25 implementation (tokenizers, IDF/TF strategies, scoring)
-│   ├── bm25_constrained_fast.py   # OpenEvolve seed: constrained search space
-│   ├── bm25_composable_fast.py    # OpenEvolve seed: composable primitives
-│   ├── bm25_freeform_fast.py      # OpenEvolve seed: freeform edits
-│   ├── bm25_classic.py            # Vanilla Robertson BM25
-│   ├── bm25l_fast.py              # BM25L variant seed
-│   ├── bm25plus_fast.py           # BM25+ variant seed
-│   ├── bm25adpt_fast.py           # BM25-Adaptive variant seed
-│   ├── bm25t_fast.py              # BM25T variant seed
-│   ├── ql_JM.py                   # Query Likelihood with Jelinek-Mercer smoothing
-│   ├── ql_freeform_fast.py        # OpenEvolve seed: QL freeform edits
-│   ├── metrics.py                 # NDCG, MAP, MRR, precision, recall
-│   └── datasets.py                # Dataset loading utilities
-├── evaluator.py                   # Unified multi-benchmark evaluator
-├── evaluator_parallel.py          # Parallel evaluator (used by OpenEvolve)
-├── evaluator_ql_parallel.py       # Parallel evaluator for QL models
-├── evaluator_bright.py            # BRIGHT-only evaluator
-├── evaluator_beir.py              # BEIR-only evaluator
-├── scripts/                       # Plotting and result printing scripts
-├── results/                       # Evaluation result JSONs and figures
-├── tests/                         # Unit tests
-├── docs/                          # Detailed results and analysis
-└── references/                    # BM25 formula derivations
-``` -->
-
-<!-- ## Development
+## Quickstart
 
 ```bash
-uv sync --group dev
-uv run pytest
-uv run ruff format
-uv run mypy src/
-``` -->
+# Sanity check: run the dashboard tests.
+uv run ranking-evolved test-dashboard
+# → reports/test_dashboard.html
 
-## References
+# Drive an evolution loop on the latency-aware BM25 task (50 iterations).
+uv run ranking-evolved run \
+  --config tasks/bm25/configs/freeform_latency_aware.yaml \
+  --replay --max-iterations 50
 
-**Evolved programs:**
-- [BM25 Freeform step 293](evolved_programs/bm25_freeform_step293.py) — Best evolved BM25, 300-step run
-- [BM25 Freeform step 177](evolved_programs/bm25_freeform_step177.py) — Best evolved BM25, 200-step run
-- [BM25 Constrained step 115](evolved_programs/bm25_constrained_step115.py) — Best constrained BM25, 200-step run
-- [BM25 Composable step 185](evolved_programs/bm25_composable_step185.py) — Best composable BM25, 200-step run
-- [QL Freeform step 182](evolved_programs/ql_freeform_step182.py) — Best evolved QL, 200-step run
+# Resume an in-progress run; --max-iterations is the total target.
+uv run ranking-evolved run \
+  --resume output/bm25_freeform_latency_aware/<run_id> \
+  --max-iterations 200
 
-**Benchmarks & tools:**
-- [OpenEvolve](https://github.com/algorithmicsuperintelligence/openevolve) — Evolutionary algorithm framework
-- [BRIGHT](https://huggingface.co/datasets/xlangai/BRIGHT) — Benchmark for reasoning-intensive retrieval
-- [BEIR](https://github.com/beir-cellar/beir) — Zero-shot information retrieval benchmark
-- [TREC DL](https://microsoft.github.io/msmarco/TREC-Deep-Learning) — TREC Deep Learning Track 2019/2020
-<!-- - [BM25 Formulas](references/bm25_formulas.md) — Detailed formula derivations
-- [Detailed Results](docs/results.md) — Full evaluation tables, scoring component details, hyperparameter search -->
+# Render the per-step replay dashboard.
+uv run ranking-evolved replay-dashboard --run output/bm25_freeform_latency_aware/<run_id>
+```
 
-## Cite RankEvolve
+Each invocation produces a self-contained run directory under
+`output/<task>/<timestamp>_<short-hash>/` with `run.db` (SQLite source of
+truth), `trace.jsonl` (streaming event log), `replay/step_NNNN.json`,
+`baseline_latency.json`, `experiment_summary.json`, `plots/*.pdf`, `best/`,
+`logs/`, and `manifest.json`.
+
+## Repository layout
+
+```
+src/ranking_evolved/      framework: engine, search, proposers, prompts, evaluation, config
+tasks/
+├── bm25/                 active BM25 task (library + evaluator + seeds + configs)
+├── ql/                   relocated only — not yet migrated; see tasks/ql/README.md
+├── _shared/              dataset loaders + metrics shared across tasks
+└── evolution_algo_test/  smoke fixture used by tests/test_smoke.py
+tests/                    framework + library tests; record_io fixture feeds the dashboard
+docs/                     architecture notes and figures
+legacy/                   pre-restructuring code kept for provenance only — do not import
+```
+
+## Adding a task
+
+A task is one folder under `tasks/` containing a seed program (the starting
+candidate), an evaluator with the signature `evaluate(program_path) -> dict`,
+an optional library of reusable code, and one or more YAML configs pointing
+at the seed and evaluator. `tasks/bm25/` is the canonical example.
+
+## Proposers and search strategies
+
+| Component       | Plug-in point                                           | Built-ins |
+| --------------- | ------------------------------------------------------- | --------- |
+| Proposer        | `src/ranking_evolved/proposers/`                        | `openai_responses`, `anthropic`, `claude_code`, `codex`, `ensemble`, `scripted`, `fake` |
+| Search strategy | `src/ranking_evolved/search/`                           | `map_elites_islands` (default) |
+| Prompt builder  | `src/ranking_evolved/prompts/sampler.py`                | parent + inspiration + artifact context |
+| Evaluator       | user-supplied `evaluate(program_path)` in a `tasks/` folder | — |
+
+New proposers and strategies self-register via the registries in
+`proposers/base.py` and `search/base.py`.
+
+## Citation
 
 ```bibtex
 @misc{nian2026rankevolveautomatingdiscoveryretrieval,
-      title={RankEvolve: Automating the Discovery of Retrieval Algorithms via LLM-Driven Evolution},
-      author={Jinming Nian and Fangchen Li and Dae Hoon Park and Yi Fang},
-      year={2026},
-      eprint={2602.16932},
-      archivePrefix={arXiv},
-      primaryClass={cs.IR},
-      url={https://arxiv.org/abs/2602.16932},
+  title         = {RankEvolve: Automating the Discovery of Retrieval Algorithms via LLM-Driven Evolution},
+  author        = {Jinming Nian and Fangchen Li and Dae Hoon Park and Yi Fang},
+  year          = {2026},
+  eprint        = {2602.16932},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.IR},
+  url           = {https://arxiv.org/abs/2602.16932},
 }
 ```
+
+## License
+
+See [LICENSE](LICENSE).

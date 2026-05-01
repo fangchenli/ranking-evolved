@@ -1,6 +1,6 @@
 import numpy as np
 
-from ranking_evolved.bm25 import BM25, Corpus
+from tasks.bm25.library import BM25, Corpus
 
 
 def test_bm25_ordering_regression() -> None:

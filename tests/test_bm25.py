@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 from datasets import load_dataset
 
-from ranking_evolved.bm25 import BM25, Corpus, tokenize
-from ranking_evolved.metrics import ndcg_at_k
+from tasks.bm25.library import BM25, Corpus, tokenize
+from tasks._shared.metrics import ndcg_at_k
 
 
 @pytest.fixture
