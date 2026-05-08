@@ -1,0 +1,11 @@
+{
+  "program_id": "5de37301-244b-4d62-8b32-fe6fcffa87c1",
+  "parent_id": "dd3a6f1f-8c87-4a81-b883-4da3801fafe6",
+  "iteration_found": 24,
+  "generation": 4,
+  "island": 2,
+  "combined_score": 0.5595126781064573,
+  "replay_step": "step_0024.json",
+  "replay_path": "../replay/step_0024.json",
+  "exported_at": "2026-05-04T18:18:08.369885+00:00"
+}

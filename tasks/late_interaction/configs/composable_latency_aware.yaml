@@ -1,0 +1,213 @@
+# Late-interaction COMPOSABLE evolution — latency-aware.
+#
+# Same evaluator + objective as freeform_latency_aware, but uses the
+# four-stage composable seed (encode_query / encode_doc / candidate_pool /
+# score). Run side-by-side with freeform to compare priors:
+#   - freeform: one big `search()` to mutate; max creative range, but the
+#     LLM has to discover the right seam every time.
+#   - composable: four explicit stage seams; biases the LLM toward
+#     interpretable per-stage edits, at the cost of cross-stage rewrites.
+#
+# Run / review workflow:
+#   export OPENAI_API_KEY=...     # or put it in .env
+# uv run ranking-evolved run \
+#   --config tasks/late_interaction/configs/composable_latency_aware.yaml \
+#   --replay --max-iterations 2
+
+task:
+  seed: tasks/late_interaction/seeds/composable.py
+  evaluator: tasks/late_interaction/evaluator.py
+
+evolution:
+  max_iterations: 100
+  random_seed: 42
+  capture_replay: true
+  capture_replay_every: 1
+
+search:
+  algorithm: map_elites_islands
+  population_size: 30
+  archive_size: 6
+  num_islands: 3
+  migration_interval: 8
+  migration_rate: 0.15
+  exploration_ratio: 0.30
+  exploitation_ratio: 0.60
+  feature_dimensions: [complexity, diversity]
+  feature_bins: 4
+  # Strategy returns up to this many inspirations; the prompt builder then
+  # dedupes against recent + top + parent and shows up to
+  # `prompt.num_diverse_programs` of them.
+  num_inspirations: 8
+  # AST-based; comments + docstrings are stripped so cosmetic edits don't
+  # move programs between cells. Set to "char_count" for legacy len() proxy.
+  complexity_metric: ast_nodes
+  # Rebucket live programs by complexity percentile as new extremes/clusters
+  # emerge, instead of pinning bins to the seed-vs-current min/max range.
+  complexity_binning: adaptive_percentile
+  # Recent score=0 / crashed candidates retained only for prompt feedback.
+  failure_buffer_size: 12
+
+proposer:
+  kind: openai_responses
+  models:
+    - {name: "gpt-5.2", weight: 1.0}
+  api_base: "https://api.openai.com/v1"
+  # NOTE: api_key is read from OPENAI_API_KEY in the environment / .env;
+  # never put it in YAML. The loader interpolates ${OPENAI_API_KEY} at
+  # load time and the CLI redacts it from config.resolved.yaml.
+  api_key: "${OPENAI_API_KEY}"
+  max_tokens: 32768
+  reasoning_effort: medium
+  timeout: 300
+  retries: 3
+  candidate_retries: 3
+
+prompt:
+  diff_based: true
+  num_recent_programs: 1
+  num_top_programs: 1
+  # Context programs render as (compact metrics + unified diff vs parent),
+  # so 5 diverse picks remain readable without repeating full source.
+  num_diverse_programs: 5
+  num_failed_attempts: 3
+  # 0 = render the full unified diff for each context/failed program.
+  max_diff_lines: 0
+  summary_metric_keys:
+    - combined_score
+    - objective_recall_component
+    - objective_ndcg_component
+    - objective_latency_component
+  summary_per_dataset_suffixes:
+    - _recall_at_1000
+    - _ndcg_at_10
+    - _query_latency_median_ms
+  include_artifacts: true
+  system_message: |
+    You are inventing a late-interaction retrieval algorithm over fixed
+    contextualized token embeddings. The seed is a four-stage pipeline
+    where every stage is currently identity, so the seed scores
+    bit-identical to exact ColBERT MaxSim:
+
+      encode_query(q_tokens)           -> QueryRep      (default: identity)
+      encode_doc(d_tokens)             -> DocRep        (default: identity, called in build())
+      Index.from_doc_reps(doc_reps)    -> Index         (default: stores list)
+      candidate_pool(q, index, top_k)  -> ndarray[int]  (default: arange(N))
+      score(q, d_rep)                  -> float         (default: exact MaxSim)
+
+    You may not retrain or re-encode embeddings; your only lever is the
+    retrieval algorithm above. Mutate ONE stage at a time when possible so
+    the change is interpretable in the per-step replay. If a coherent
+    cross-stage change is needed (e.g. centroid posting lists touch both
+    Index and candidate_pool), do it in one diff and explain why.
+
+    Published systems such as ColBERTv2, PLAID/FastPLAID, XTR, WARP, ScaNN,
+    FAISS IVF/PQ/OPQ are prior art and sources of design pressure, not
+    templates to copy. Seek a new, elegant principle.
+
+    Objective:
+
+      combined_score = 0.40 * agg_recall@1000
+                     + 0.30 * agg_ndcg@10
+                     + 0.30 * agg_latency_score
+
+      latency_ratio_d  = candidate_median_query_latency_ms_d
+                       / exact_maxsim_median_query_latency_ms_d   (per dataset)
+      latency_score_d  = 1 / (1 + latency_ratio_d)
+      agg_<metric>     = geometric mean over datasets
+                         (a near-zero on ANY dataset drops the aggregate near zero)
+      if a dataset's ratio > 8x: that dataset's latency_score = 0
+      if any dataset's recall@1000 < 0.10: combined_score = 0 (candidate rejected)
+
+    Evaluation datasets (chosen to span ~8x corpus-size range):
+      beir_fiqa                    (~58K docs, financial Q&A, balanced quality)
+      bright_stackoverflow         (107K docs, programming Q&A, sparse qrels)
+      bright_theoremqa_questions   (188K docs, math problems, biggest latency target)
+
+    Design rules:
+    - Prefer one coherent algorithmic idea over stacked local tweaks.
+    - Constants must be interpretable budgets, probabilities, dimensions,
+      bin counts, or thresholds with a reason. Hyperparameters belong on
+      `Config`, not buried in functions.
+    - Budgets MUST scale with corpus size. A constant `rerank_n = K * top_k`
+      is fine on 24K docs but covers ~14% of 171K docs and collapses recall
+      on the largest corpus. Use `min(N, max(top_k, alpha * sqrt(N)))` or a
+      similar size-aware rule.
+    - The per-dataset diagnostics include `corpus_coverage = documents_scored
+      / corpus_size`. If it stays near 1.0, you didn't actually prune.
+    - No dataset-name branches, quality-floor gates, ablation switches,
+      feature flags, or external data/services.
+    - Preserve the public surface: `LateInteractionRetriever.build(docs)`
+      and `search(queries, top_k) -> dict[query_id, list[(doc_id, score)]]`.
+
+    Editing format:
+
+    Use SEARCH/REPLACE diffs only. SEARCH must match the current code exactly.
+    REPLACE contains the edited code.
+
+    Use feedback deliberately:
+
+    The per-dataset metrics show you `recall@{10,100,1000}`, `ndcg@10`,
+    `p50/p95/mean query latency`, `build_time_ms`, `corpus_coverage`. The
+    latency_ratio per dataset tells you how far you are from exact MaxSim's
+    speed on that corpus.
+
+    If recall improves but latency collapses, the change is too expensive;
+    look for a precomputed or lazy form of the same idea. If latency
+    improves but recall collapses on one dataset, your candidate budget
+    isn't scaling with corpus size — widen the pool on the larger corpora.
+
+evaluation:
+  timeout: 1800
+  isolation: inline
+  cascade: false
+  env:
+    EVAL_DEVICE: cpu
+    EVAL_DATASETS: beir_fiqa,bright_stackoverflow,bright_theoremqa_questions
+    EVAL_SAMPLE_QUERIES: "1000000000"
+    EVAL_WARMUP_QUERIES: "10"
+    EVAL_TIMED_REPEATS: "1"
+    EVAL_PROGRESS: "1"
+
+objective:
+  name: recall1000_ndcg10_latency
+  recall_k: 1000
+  ndcg_k: 10
+  weights:
+    recall: 0.40
+    ndcg: 0.30
+    latency: 0.30
+  aggregation:
+    mode: geometric
+    eps: 1.0e-3
+  min_recall: 0.10
+  latency:
+    enabled: true
+    baseline_source: external
+    baseline_path: tasks/late_interaction/baselines/exact_maxsim.${EVAL_DEVICE}.json
+    relative_to: external
+    warmup_queries: 10
+    timed_repeats: 1
+    aggregation: median_per_query
+    ratio_transform: inverse_one_plus_ratio
+    hard_slowdown_threshold: 8.0
+    penalty_mode: zero_latency_score
+
+trace:
+  enabled: true
+  include_prompts: true
+
+logging:
+  level: INFO
+  debug_log: false
+  run_log_max_mb: 10
+  run_log_backups: 5
+  proposer_log_max_mb: 50
+  proposer_log_backups: 3
+  proposer_log_gzip: true
+  evaluator_log_max_mb: 25
+  evaluator_log_backups: 3
+
+run_store:
+  backend: sqlite
+  vacuum_on_close: true

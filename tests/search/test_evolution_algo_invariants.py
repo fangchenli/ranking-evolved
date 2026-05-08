@@ -32,9 +32,7 @@ def _run_evolution_algo_test() -> Path:
     )
 
     assert result.returncode == 0, (
-        "evolution algo test run failed\n\n"
-        f"STDOUT:\n{result.stdout}\n\n"
-        f"STDERR:\n{result.stderr}"
+        f"evolution algo test run failed\n\nSTDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
     )
 
     run_dir_line = None
@@ -111,20 +109,37 @@ def test_evolution_algo_core_invariants() -> None:
                 )
             )
 
+        # MAP-Elites cell-eviction invariant: a child can only evict the
+        # program currently occupying its (complexity, diversity) cell when
+        # the child's fitness is STRICTLY GREATER than that program's. The
+        # comparison is against the EVICTED program's score, not the parent's
+        # — under a true 2-D grid the child often lands in a cell occupied
+        # by some non-parent program. (Earlier versions of this test compared
+        # to the parent because diversity was hard-coded to 0.0, which
+        # collapsed the grid to 1-D and made child and parent always share
+        # a cell. Once diversity actually varies that incidental property
+        # disappears.)
         evicted = admission.get("evicted_program_id")
-        if child_score < parent_score and evicted is not None:
-            errors.append(
-                (
-                    i,
-                    "worse_child_evicted_program",
-                    "parent_score",
-                    parent_score,
-                    "child_score",
-                    child_score,
-                    "evicted",
-                    evicted,
+        if evicted is not None:
+            db_before = step.get("db_before") or {}
+            evicted_score = None
+            for entry in db_before.get("programs", []) or []:
+                if entry.get("id") == evicted:
+                    evicted_score = (entry.get("metrics") or {}).get("combined_score")
+                    break
+            if evicted_score is not None and child_score <= evicted_score:
+                errors.append(
+                    (
+                        i,
+                        "worse_child_evicted_program",
+                        "evicted_score",
+                        evicted_score,
+                        "child_score",
+                        child_score,
+                        "evicted",
+                        evicted,
+                    )
                 )
-            )
 
         if admission.get("migration_fired"):
             migration_steps.append(i)

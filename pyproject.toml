@@ -41,6 +41,11 @@ benchmark = [
     "pyserini>=0.25.0",
     "optuna>=4.0.0",
 ]
+late-interaction = [
+    "pylate>=1.4.0",
+    "torch>=2.9.0",
+    "transformers>=4.56.2",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

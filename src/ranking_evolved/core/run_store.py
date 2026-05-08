@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from .types import Program
-
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS programs (
@@ -202,6 +202,19 @@ class RunStore:
             "INSERT INTO archive_cells(island, cell_key, program_id) VALUES (?,?,?) "
             "ON CONFLICT(island, cell_key) DO UPDATE SET program_id=excluded.program_id",
             (island, cell_key, program_id),
+        )
+
+    def replace_archive_cells(
+        self,
+        cells: Iterable[tuple[int, str, str]],
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        c = conn or self._conn
+        c.execute("DELETE FROM archive_cells")
+        c.executemany(
+            "INSERT INTO archive_cells(island, cell_key, program_id) VALUES (?,?,?)",
+            list(cells),
         )
 
     def archive_cells(self) -> dict[tuple[int, str], str]:

@@ -1,0 +1,88 @@
+{
+  "_average": {
+    "build_time_ms": 11684.762388623009,
+    "mean_query_latency_ms": 1131.271520066534,
+    "median_query_latency_ms": 1102.6508193075035,
+    "ndcg_at_10": 0.19070247931004258,
+    "p95_query_latency_ms": 1293.4776485393133,
+    "recall_at_10": 0.2398690205948677,
+    "recall_at_100": 0.446576420322472,
+    "recall_at_1000": 0.6660305319773453
+  },
+  "_completed": [
+    "beir_fiqa",
+    "bright_stackoverflow",
+    "bright_theoremqa_questions"
+  ],
+  "_datasets": [
+    "beir_fiqa",
+    "bright_stackoverflow",
+    "bright_theoremqa_questions"
+  ],
+  "_fingerprint": {
+    "blas_threads": {
+      "mkl": 1,
+      "omp": 1,
+      "openblas": 1,
+      "veclib": 1
+    },
+    "cpu_count": 10,
+    "cuda_version": null,
+    "device": "cpu",
+    "device_name": "arm (Apple/Darwin)",
+    "hostname": "Jimmys-MacBook-Pro-1411.local",
+    "numpy_version": "2.3.1",
+    "torch_version": "2.9.0"
+  },
+  "_program": "/Users/jimmynian/code/ranking-evolved/tasks/late_interaction/seeds/composable.py",
+  "_run_config": {
+    "extra_recall_ks": [
+      10,
+      100
+    ],
+    "ndcg_k": 10,
+    "recall_k": 1000,
+    "sample_queries": 1000000000,
+    "timed_repeats": 3,
+    "warmup_queries": 10
+  },
+  "beir_fiqa": {
+    "build_time_ms": 4398.009165888652,
+    "mean_query_latency_ms": 522.0368189135721,
+    "median_query_latency_ms": 521.8704169383273,
+    "ndcg_at_10": 0.4195118479452264,
+    "num_queries": 648,
+    "p95_query_latency_ms": 523.8662393530831,
+    "recall_at_10": 0.4990454932584562,
+    "recall_at_100": 0.7381867104089326,
+    "recall_at_1000": 0.9252482042991302,
+    "timed_repeats": 3,
+    "warmup_queries": 10
+  },
+  "bright_stackoverflow": {
+    "build_time_ms": 7052.872500033118,
+    "mean_query_latency_ms": 967.5842475167946,
+    "median_query_latency_ms": 927.8984579723328,
+    "ndcg_at_10": 0.08039120873380405,
+    "num_queries": 117,
+    "p95_query_latency_ms": 1179.8434584401548,
+    "recall_at_10": 0.11403235890415378,
+    "recall_at_100": 0.398363856400408,
+    "recall_at_1000": 0.6641786886383058,
+    "timed_repeats": 3,
+    "warmup_queries": 10
+  },
+  "bright_theoremqa_questions": {
+    "build_time_ms": 23603.405499947257,
+    "mean_query_latency_ms": 1904.1934937692354,
+    "median_query_latency_ms": 1858.1835830118507,
+    "ndcg_at_10": 0.07220438125109727,
+    "num_queries": 194,
+    "p95_query_latency_ms": 2176.7232478247024,
+    "recall_at_10": 0.10652920962199311,
+    "recall_at_100": 0.2031786941580756,
+    "recall_at_1000": 0.40866470299459995,
+    "timed_repeats": 3,
+    "warmup_queries": 10
+  }
+}

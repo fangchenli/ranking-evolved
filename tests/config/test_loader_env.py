@@ -1,4 +1,5 @@
 """Tests for .env loading + ${ENV} interpolation in config/loader.py."""
+
 from __future__ import annotations
 
 import os
@@ -68,7 +69,7 @@ def test_dotenv_handles_quotes_comments_and_export(tmp_path: Path, monkeypatch, 
     monkeypatch.delenv("MY_EXPORTED", raising=False)
     monkeypatch.delenv("MY_COMMENTED", raising=False)
     (tmp_path / ".env").write_text(
-        '# leading comment\n'
+        "# leading comment\n"
         'MY_QUOTED="hello world"\n'
         "export MY_EXPORTED=exported_value\n"
         "# MY_COMMENTED=ignored\n"
@@ -102,6 +103,57 @@ def test_dotenv_handles_quotes_comments_and_export(tmp_path: Path, monkeypatch, 
         "exported": "exported_value",
         "commented_present": False,
     }
+
+
+def test_loader_refuses_literal_api_key_in_yaml(tmp_path: Path, monkeypatch, record_io):
+    """A literal `api_key: sk-...` in the YAML must hard-fail load_config."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cfg_path = tmp_path / "task.yaml"
+    cfg_path.write_text(
+        "task: {seed: s.py, evaluator: e.py}\n"
+        "proposer:\n"
+        "  kind: openai_chat\n"
+        '  api_key: "sk-proj-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"\n'
+        "search:\n  algorithm: map_elites_islands\n"
+    )
+
+    def run() -> str:
+        try:
+            load_config(cfg_path)
+            return "no_raise"
+        except ValueError as exc:
+            return str(exc)
+
+    out = record_io(
+        module="src/ranking_evolved/config/loader.py",
+        function="load_config (literal-key refusal)",
+        input={"yaml_has_literal_key": True},
+        run=run,
+    )
+    assert "literal API-key-shaped value" in out
+    assert "OPENAI_API_KEY" in out
+
+
+def test_loader_allows_env_interpolated_api_key(tmp_path: Path, monkeypatch, record_io):
+    """`api_key: ${OPENAI_API_KEY}` must work even when the env var holds a
+    real-shaped key — the secrecy guard runs against the raw YAML, not the
+    interpolated value."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-RealLookingKeyXXXXXXXXXXXXXXXXX")
+    cfg_path = tmp_path / "task.yaml"
+    cfg_path.write_text(_MINIMAL_YAML)
+
+    def run() -> str:
+        cfg = load_config(cfg_path)
+        return cfg.proposer.api_key
+
+    out = record_io(
+        module="src/ranking_evolved/config/loader.py",
+        function="load_config (env-interpolated key allowed)",
+        input={"OPENAI_API_KEY shape": "sk-proj-..."},
+        run=run,
+    )
+    # Loader accepted it (didn't raise) and the value made it through.
+    assert out.startswith("sk-proj-")
 
 
 def test_explicit_env_file_required_to_exist(tmp_path: Path, record_io):

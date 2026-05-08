@@ -7,6 +7,7 @@ in `.env` rather than the shell session.
 Keeps the surface tiny: PyYAML if available, otherwise a fallback that
 asks the user to install. Strict-mode: any unknown top-level key raises.
 """
+
 from __future__ import annotations
 
 import os
@@ -25,7 +26,12 @@ from .base import (
     TaskConfig,
     TraceConfig,
 )
-from .objective import LatencyConfig, ObjectiveConfig, ObjectiveWeights
+from .objective import (
+    AggregationConfig,
+    LatencyConfig,
+    ObjectiveConfig,
+    ObjectiveWeights,
+)
 from ..prompts.sampler import PromptConfig
 from ..search.map_elites_islands import MapElitesIslandsConfig
 
@@ -48,14 +54,30 @@ def load_config(
     try:
         import yaml  # noqa: PLC0415
     except ImportError as exc:
-        raise ImportError(
-            "PyYAML is required. Install via `uv add pyyaml`."
-        ) from exc
+        raise ImportError("PyYAML is required. Install via `uv add pyyaml`.") from exc
 
     config_path = Path(path)
     _load_env_file(_resolve_env_file(config_path, env_file))
 
     raw_text = config_path.read_text()
+    # Pre-pass: parse uninterpolated YAML once to extract `evaluation.env`
+    # and seed it into os.environ (without overwriting shell vars). This lets
+    # `${EVAL_DEVICE}` inside the YAML (e.g. in objective.latency.baseline_path)
+    # resolve from the same `evaluation.env` block that the runner will pass
+    # to the evaluator at call time — so the YAML alone fully describes the
+    # run, no shell prerequisites required.
+    try:
+        prepass = yaml.safe_load(raw_text) or {}
+    except yaml.YAMLError:
+        # Will raise again on the real parse below — keep behavior consistent.
+        prepass = {}
+    _seed_env_from_evaluation_block(prepass)
+
+    # Refuse literal API keys in the YAML BEFORE env interpolation —
+    # interpolated `${OPENAI_API_KEY}` values are fine even if they expand to
+    # a real-shaped key, but a hard-coded `api_key: sk-...` line in the YAML
+    # is not.
+    _enforce_no_literal_secrets_in_raw(raw_text, config_path)
     raw_text = _interpolate_env(raw_text)
     data = yaml.safe_load(raw_text) or {}
     if overrides:
@@ -64,11 +86,67 @@ def load_config(
     return _build_config(data)
 
 
+# Match a YAML line of the form `<some_key>: <maybe-quoted><secret>` where
+# `<secret>` looks like an API key. Catches `api_key:`, `openai_api_key:`,
+# `auth_token:`, etc. — anything ending in `_key`/`_token`/`_secret` plus
+# the bare names `api_key`/`password`/etc.
+_LITERAL_SECRET_LINE = re.compile(
+    r"""(?xm)
+    ^[ \t]*
+    (?:[A-Za-z_][A-Za-z0-9_]*_(?:key|token|secret|password)|api_key|password|secret|auth_token)
+    [ \t]*:[ \t]*
+    ["']?
+    (sk-[A-Za-z0-9_\-]{16,})       # OpenAI / Anthropic / project key shape
+    ["']?
+    [ \t]*$
+    """
+)
+
+
+def _enforce_no_literal_secrets_in_raw(raw_yaml: str, config_path: Path) -> None:
+    """Refuse to start when a literal API key is hard-coded in the YAML.
+
+    Runs against the uninterpolated YAML text so that `${OPENAI_API_KEY}` is
+    still allowed (it doesn't match the `sk-...` shape until after
+    interpolation, which we don't do here).
+    """
+    m = _LITERAL_SECRET_LINE.search(raw_yaml)
+    if m:
+        raise ValueError(
+            f"{config_path} contains a literal API-key-shaped value "
+            f"(matched: {m.group(1)[:8]}...). Move it to the environment "
+            "(e.g. `export OPENAI_API_KEY=...` or a `.env` file) and "
+            'reference it as `api_key: "${OPENAI_API_KEY}"`.'
+        )
+
+
+def _seed_env_from_evaluation_block(data: dict) -> None:
+    """Push values from the YAML's `evaluation.env` into os.environ.
+
+    Existing env vars are NOT overwritten (shell wins). This runs BEFORE
+    `_interpolate_env` so any `${VAR}` inside the YAML can be resolved from
+    the YAML-declared env. Values are coerced to str (YAML parses "10" as
+    int by default).
+    """
+    evaluation = data.get("evaluation") or {}
+    if not isinstance(evaluation, dict):
+        return
+    env_block = evaluation.get("env") or {}
+    if not isinstance(env_block, dict):
+        return
+    for key, value in env_block.items():
+        if value is None:
+            continue
+        key_s = str(key)
+        if key_s and key_s not in os.environ:
+            os.environ[key_s] = str(value)
+
+
 def _resolve_env_file(config_path: Path, explicit: str | Path | None) -> Path | None:
     """Find the .env file to load. Search order:
-       1) `explicit` (if given) — must exist or we raise.
-       2) `<config_dir>/.env` — for task-scoped overrides.
-       3) walk up from cwd; first `.env` found wins.
+    1) `explicit` (if given) — must exist or we raise.
+    2) `<config_dir>/.env` — for task-scoped overrides.
+    3) walk up from cwd; first `.env` found wins.
     """
     if explicit is not None:
         p = Path(explicit)
@@ -100,7 +178,7 @@ def _load_env_file(path: Path | None) -> None:
         if not line or line.startswith("#"):
             continue
         if line.startswith("export "):
-            line = line[len("export "):].lstrip()
+            line = line[len("export ") :].lstrip()
         if "=" not in line:
             continue
         key, _, value = line.partition("=")
@@ -117,22 +195,48 @@ def _load_env_file(path: Path | None) -> None:
 def _interpolate_env(text: str) -> str:
     def _sub(m: re.Match[str]) -> str:
         return os.environ.get(m.group(1), m.group(0))
+
     return _ENV_PATTERN.sub(_sub, text)
 
 
 def _apply_override(data: dict, override: str) -> None:
     """Apply `key.subkey=value` (value parsed as YAML scalar)."""
     import yaml  # noqa: PLC0415
+
     if "=" not in override:
         raise ValueError(f"--set expects key=value, got {override!r}")
     key, raw_value = override.split("=", 1)
     parts = key.split(".")
     cursor = data
-    for part in parts[:-1]:
-        cursor = cursor.setdefault(part, {})
-        if not isinstance(cursor, dict):
-            raise ValueError(f"--set conflict: {part} is not a mapping")
-    cursor[parts[-1]] = yaml.safe_load(raw_value)
+    for i, part in enumerate(parts[:-1]):
+        next_part = parts[i + 1]
+        if isinstance(cursor, dict):
+            if part not in cursor or cursor[part] is None:
+                cursor[part] = [] if next_part.isdigit() else {}
+            cursor = cursor[part]
+        elif isinstance(cursor, list):
+            if not part.isdigit():
+                raise ValueError(f"--set conflict: {part} is not a list index")
+            idx = int(part)
+            if idx >= len(cursor):
+                raise ValueError(f"--set list index out of range: {part}")
+            cursor = cursor[idx]
+        else:
+            raise ValueError(f"--set conflict: {part} is not a mapping or list")
+
+    final = parts[-1]
+    value = yaml.safe_load(raw_value)
+    if isinstance(cursor, dict):
+        cursor[final] = value
+    elif isinstance(cursor, list):
+        if not final.isdigit():
+            raise ValueError(f"--set conflict: {final} is not a list index")
+        idx = int(final)
+        if idx >= len(cursor):
+            raise ValueError(f"--set list index out of range: {final}")
+        cursor[idx] = value
+    else:
+        raise ValueError(f"--set conflict: {final} is not a mapping or list")
 
 
 def _build_config(data: dict) -> Config:
@@ -166,21 +270,24 @@ def _build_config(data: dict) -> Config:
 def _objective_section(data: dict) -> ObjectiveConfig:
     """Build ObjectiveConfig from the YAML `objective:` block.
 
-    Two nested sub-dataclasses (`weights:`, `latency:`) need their own
-    unknown-key validation, so we don't go through the generic
-    `_section()` helper.
+    Three nested sub-dataclasses (`weights:`, `latency:`, `aggregation:`)
+    need their own unknown-key validation, so we don't go through the
+    generic `_section()` helper.
     """
     sub = data.get("objective", {}) or {}
     weights_raw = sub.get("weights", {}) or {}
     latency_raw = sub.get("latency", {}) or {}
-    top = {k: v for k, v in sub.items() if k not in ("weights", "latency")}
-    unknown = set(top) - {f.name for f in fields(ObjectiveConfig)} - {"weights", "latency"}
+    aggregation_raw = sub.get("aggregation", {}) or {}
+    nested = ("weights", "latency", "aggregation")
+    top = {k: v for k, v in sub.items() if k not in nested}
+    unknown = set(top) - {f.name for f in fields(ObjectiveConfig)} - set(nested)
     if unknown:
         raise ValueError(f"unknown ObjectiveConfig keys: {sorted(unknown)}")
     return ObjectiveConfig(
         **_extract(top, ObjectiveConfig),
         weights=ObjectiveWeights(**_extract(weights_raw, ObjectiveWeights)),
         latency=LatencyConfig(**_extract(latency_raw, LatencyConfig)),
+        aggregation=AggregationConfig(**_extract(aggregation_raw, AggregationConfig)),
     )
 
 

@@ -1,0 +1,7 @@
+created_at_step: 24
+program_id: 5de37301-244b-4d62-8b32-fe6fcffa87c1
+parent_id: dd3a6f1f-8c87-4a81-b883-4da3801fafe6
+generation: 4
+island: 2
+combined_score: 0.5595126781064573
+replay: ../replay/step_0024.json

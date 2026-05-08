@@ -5,16 +5,17 @@ by hand (no LLM, no evaluator), drive `admit` / `sample` directly, and check
 the resulting state field-by-field. This is the parity-relevant module, so
 the assertions are explicit.
 """
+
 from __future__ import annotations
 
 import time
-
-import pytest
 
 from ranking_evolved.core.types import Program
 from ranking_evolved.search.map_elites_islands import (
     MapElitesIslandsConfig,
     MapElitesIslandsStrategy,
+    _ast_node_count,
+    _normalized_core_source,
 )
 
 
@@ -62,6 +63,10 @@ def _make_strategy(**overrides) -> MapElitesIslandsStrategy:
     return MapElitesIslandsStrategy(cfg)
 
 
+def _assignment_code(n: int) -> str:
+    return "\n".join(f"x{i} = {i}" for i in range(n)) + "\n"
+
+
 # ----------------------------------------------------------------------------
 
 
@@ -75,9 +80,7 @@ def test_initialize_seeds_every_island(record_io):
             "n_programs": len(strat.programs),
             "islands_sizes": [len(i) for i in strat.islands],
             "best_id": strat.best_program_id,
-            "feature_maps_have_seed": [
-                bool(m) for m in strat.island_feature_maps
-            ],
+            "feature_maps_have_seed": [bool(m) for m in strat.island_feature_maps],
         }
 
     out = record_io(
@@ -99,7 +102,10 @@ def test_admit_replaces_cell_when_better(record_io):
     # Use "complexity" so identical source code maps to the same MAP-Elites cell.
     # ("score" would put each fitness value in a different cell — defeats the test.)
     strat = _make_strategy(
-        num_islands=1, archive_size=10, feature_dimensions=["complexity"], feature_bins=5,
+        num_islands=1,
+        archive_size=10,
+        feature_dimensions=["complexity"],
+        feature_bins=5,
     )
     seed = _mk("seed", code="# seed\nx = 1\n", score=0.3)
     strat.initialize(seed)
@@ -282,7 +288,9 @@ def test_sample_returns_parent_and_inspirations_from_same_island(record_io):
 
 def test_feature_coords_complexity_diversity_built_ins(record_io):
     strat = _make_strategy(
-        num_islands=1, feature_dimensions=["complexity", "diversity"], feature_bins=5,
+        num_islands=1,
+        feature_dimensions=["complexity", "diversity"],
+        feature_bins=5,
     )
     seed = _mk("seed", code="# seed\nx = 1\n", score=0.5)
     strat.initialize(seed)
@@ -300,6 +308,80 @@ def test_feature_coords_complexity_diversity_built_ins(record_io):
         run=run,
     )
     assert out == {"coords_within_bin_range": True, "n_dims": 2}
+
+
+def test_adaptive_complexity_rebucket_moves_existing_program(record_io):
+    strat = _make_strategy(
+        num_islands=1,
+        feature_dimensions=["complexity"],
+        feature_bins=3,
+        archive_size=10,
+    )
+    seed = _mk("seed", code=_assignment_code(1), score=0.3)
+    strat.initialize(seed)
+    mid = _mk("mid", code=_assignment_code(10), parent_id="seed", score=0.4, iteration=1)
+    high = _mk("high", code=_assignment_code(20), parent_id="seed", score=0.5, iteration=2)
+
+    def run() -> dict:
+        strat.admit(mid, iteration=1)
+        mid_before = int(strat.programs["mid"].feature_coords["complexity"])
+        strat.admit(high, iteration=2)
+        return {
+            "mid_before": mid_before,
+            "mid_after": int(strat.programs["mid"].feature_coords["complexity"]),
+            "high_after": int(strat.programs["high"].feature_coords["complexity"]),
+            "occupied_complexity_bins": sorted(
+                {int(p.feature_coords["complexity"]) for p in strat.programs.values()}
+            ),
+        }
+
+    out = record_io(
+        module="src/ranking_evolved/search/map_elites_islands.py",
+        function="MapElitesIslandsStrategy._rebucket_feature_maps",
+        input={"feature_dimensions": ["complexity"], "feature_bins": 3},
+        run=run,
+    )
+    assert out["mid_before"] == 2
+    assert out["mid_after"] == 1
+    assert out["high_after"] == 2
+    assert out["occupied_complexity_bins"] == [0, 1, 2]
+
+
+def test_adaptive_rebucket_cell_host_uses_strict_score(record_io):
+    strat = _make_strategy(
+        num_islands=1,
+        feature_dimensions=["complexity"],
+        feature_bins=3,
+        archive_size=10,
+    )
+    seed = _mk("seed", code=_assignment_code(1), score=0.3)
+    strat.initialize(seed)
+    same_complexity_code = _assignment_code(10)
+    low = _mk("low", code=same_complexity_code, parent_id="seed", score=0.4, iteration=1)
+    high = _mk("high", code=same_complexity_code, parent_id="seed", score=0.9, iteration=2)
+
+    def run() -> dict:
+        strat.admit(low, iteration=1)
+        strat.admit(high, iteration=2)
+        cell = "-".join(
+            str(int(strat.programs["high"].feature_coords[dim]))
+            for dim in strat.config.feature_dimensions
+        )
+        return {
+            "shared_cell": cell,
+            "cell_host": strat.island_feature_maps[0][cell],
+            "low_cell": dict(strat.programs["low"].feature_coords),
+            "high_cell": dict(strat.programs["high"].feature_coords),
+        }
+
+    out = record_io(
+        module="src/ranking_evolved/search/map_elites_islands.py",
+        function="MapElitesIslandsStrategy._rebucket_feature_maps",
+        input={"collision_rule": "strict fitness replacement"},
+        run=run,
+    )
+    assert out["cell_host"] == "high"
+    assert out["low_cell"] == out["high_cell"]
 
 
 def test_feature_coords_unknown_dim_raises(record_io):
@@ -351,6 +433,36 @@ def test_sampling_decisions_records_island_local_top(record_io):
     assert out["rng_seed_hash_len"] == 16
 
 
+def test_recent_programs_are_island_local_and_sorted_by_iteration(record_io):
+    strat = _make_strategy(num_islands=2, feature_dimensions=["score"])
+    seed = _mk("seed", score=0.5, iteration=0)
+    programs = [
+        seed,
+        *[_mk(f"p{i}", parent_id="seed", score=0.5, iteration=i) for i in range(1, 4)],
+    ]
+    other = _mk("other", score=0.5, iteration=99, island=1)
+    strat.programs = {p.id: p for p in [*programs, other]}
+    strat.islands = [{"seed", "p1", "p2", "p3"}, {"other"}]
+
+    def run() -> dict:
+        recent = strat.recent_programs(n=3, island_idx=0, exclude_program_id="p3")
+        parent = strat.programs["p3"]
+        decisions = strat.sampling_decisions(4, parent, inspirations=[])
+        return {
+            "recent_ids": [p.id for p in recent],
+            "decision_previous_ids": decisions.previous_program_ids,
+        }
+
+    out = record_io(
+        module="src/ranking_evolved/search/map_elites_islands.py",
+        function="MapElitesIslandsStrategy.recent_programs",
+        input={"exclude_program_id": "p3", "n": 3},
+        run=run,
+    )
+    assert out["recent_ids"] == ["p2", "p1", "seed"]
+    assert out["decision_previous_ids"] == ["p2", "p1", "seed"]
+
+
 def test_determinism_same_seed_same_choices(record_io):
     """Two strategies with identical seed + admit sequence must produce the
     same sample outcome — even when run in the same process across calls.
@@ -360,6 +472,7 @@ def test_determinism_same_seed_same_choices(record_io):
     legitimately land on the same parent. The property we care about is
     determinism in one direction: same seed -> same outcome.
     """
+
     def build_and_sample(seed_val: int) -> dict:
         strat = _make_strategy(num_islands=2, random_seed=seed_val, feature_dimensions=["score"])
         seed = _mk("seed", score=0.5)
@@ -460,6 +573,173 @@ def test_state_dict_roundtrips_sampling_state(record_io):
 def test_strategy_registered():
     """The decorator must register the strategy under the canonical name."""
     from ranking_evolved.search.base import REGISTRY
+
     assert "map_elites_islands" in REGISTRY
     # Registered factory points at the class.
     assert REGISTRY["map_elites_islands"] is MapElitesIslandsStrategy
+
+
+def test_admit_stamps_diversity_and_complexity_from_source_code(record_io):
+    """The strategy must overwrite caller-provided diversity/complexity placeholders.
+
+    Regression: controller used to pass diversity=0.0 always, which collapsed
+    the 2-D MAP-Elites grid to 1-D. Strategy now owns these fields.
+    """
+    strat = _make_strategy(num_islands=1, feature_dimensions=["complexity", "diversity"])
+    seed = _mk("seed", code="# seed\nimport numpy as np\nx = 1\n", score=0.4)
+    strat.initialize(seed)
+
+    # Caller-side placeholders (mimic controller behavior pre-strategy-stamping).
+    distinct_code = (
+        "# distinct child\n"
+        "from collections import defaultdict\n"
+        "def hello(world):\n    return world * 2\n"
+    )
+    child = _mk("child", code=distinct_code, parent_id="seed", score=0.6, iteration=1)
+    # Force the placeholders the controller used to ship.
+    bad_child = Program(
+        id=child.id,
+        source_code=child.source_code,
+        parent_id=child.parent_id,
+        generation=child.generation,
+        iteration_found=child.iteration_found,
+        timestamp=child.timestamp,
+        metrics=child.metrics,
+        complexity=0.0,
+        diversity=0.0,
+        island=child.island,
+        feature_coords={},
+        metadata={},
+    )
+
+    def run() -> dict:
+        strat.admit(bad_child, iteration=1)
+        stamped = strat.programs[bad_child.id]
+        return {
+            "complexity": stamped.complexity,
+            "diversity": stamped.diversity,
+            "feature_coords": dict(stamped.feature_coords),
+        }
+
+    out = record_io(
+        module="src/ranking_evolved/search/map_elites_islands.py",
+        function="MapElitesIslandsStrategy._admit_into_island",
+        input={"feature_dimensions": ["complexity", "diversity"]},
+        run=run,
+    )
+
+    # Complexity is the AST node count of the comment/docstring-stripped
+    # source. Identical algorithm with cosmetic-only changes → same value.
+    expected_complexity = float(_ast_node_count(_normalized_core_source(distinct_code)))
+    assert out["complexity"] == expected_complexity
+    # Diversity must be > 0 because the child code differs from the seed
+    # (which is the diversity anchor).
+    assert out["diversity"] > 0.0
+    # Both feature dimensions populated → 2-D grid is alive.
+    assert set(out["feature_coords"].keys()) == {"complexity", "diversity"}
+
+
+def test_admit_anchors_diversity_to_seed():
+    """`initialize()` pins the seed's normalized core source as the
+    diversity anchor, so the very first child gets a meaningful (non-zero)
+    diversity score even when the archive is otherwise empty."""
+    strat = _make_strategy(num_islands=1, feature_dimensions=["complexity", "diversity"])
+    seed = _mk("seed", code="alpha = 1\n", score=0.5)
+    strat.initialize(seed)
+    # The anchor matches the seed's normalized core source.
+    assert strat._diversity_seed_anchor == _normalized_core_source(seed.source_code)
+    # A child with disjoint identifiers should have a high diversity score
+    # even though the archive only contains seed copies.
+    disjoint = _mk("d", code="zulu = 9\nyankee = 8\n", parent_id="seed", score=0.6)
+    strat.admit(disjoint, iteration=1)
+    stamped = strat.programs["d"]
+    assert stamped.diversity > 0.5
+
+
+def test_complexity_is_invariant_to_comment_edits():
+    """Two programs with identical code but different comments must land
+    in the same complexity bin. This was the user-reported bug: cosmetic
+    edits moved programs across the MAP-Elites grid as much as real ones."""
+    strat = _make_strategy(num_islands=1, feature_dimensions=["complexity", "diversity"])
+    seed = _mk("seed", code="x = 1\ny = 2\n", score=0.5)
+    strat.initialize(seed)
+    # Same algorithm, very different comment volume.
+    a_code = "# short\nx = 1\ny = 2\n"
+    b_code = "# very very very long comment that triples the byte count\n# more\nx = 1\ny = 2\n"
+    a = _mk("a", code=a_code, parent_id="seed", score=0.6, iteration=1)
+    b = _mk("b", code=b_code, parent_id="seed", score=0.6, iteration=2)
+    strat.admit(a, iteration=1)
+    strat.admit(b, iteration=2)
+    stamped_a = strat.programs["a"]
+    stamped_b = strat.programs["b"]
+    # AST node count is identical because comments aren't AST nodes.
+    assert stamped_a.complexity == stamped_b.complexity
+
+
+def test_score_zero_programs_are_not_admitted():
+    """Crashed / recall-floor children must not occupy MAP-Elites cells,
+    enter the archive, or join the live population — they only get
+    captured in the failure ring buffer for prompt feedback."""
+    strat = _make_strategy(num_islands=1, archive_size=5)
+    seed = _mk("seed", code="x = 1\n", score=0.5)
+    strat.initialize(seed)
+    failed = _mk("failed", code="z = 9\n", parent_id="seed", score=0.0, iteration=1)
+
+    n_programs_before = len(strat.programs)
+    archive_before = set(strat.archive)
+    cells_before = {k: dict(v) for k, v in enumerate(strat.island_feature_maps)}
+
+    admission = strat.admit(failed, iteration=1)
+
+    # Cell key is empty → controller's `if admission.cell_key:` skips upsert.
+    assert admission.cell_key == ""
+    assert admission.evicted_program_id is None
+    # Live population unchanged.
+    assert len(strat.programs) == n_programs_before
+    assert "failed" not in strat.programs
+    assert strat.archive == archive_before
+    assert {k: dict(v) for k, v in enumerate(strat.island_feature_maps)} == cells_before
+    # Failure record IS captured for the prompt builder.
+    failures = strat.recent_failures(n=5)
+    assert len(failures) == 1
+    assert failures[0].child_source_code == failed.source_code
+    assert failures[0].parent_source_code == seed.source_code
+
+
+def test_recent_failures_filtered_by_island():
+    """`recent_failures(island_idx=...)` must restrict to the parent
+    island so the LLM sees failures relevant to its current evolution."""
+    strat = _make_strategy(num_islands=2, archive_size=5)
+    seed = _mk("seed", code="x = 1\n", score=0.5)
+    strat.initialize(seed)
+    f0 = _mk("f0", code="z = 9\n", parent_id="seed", score=0.0, iteration=1, island=0)
+    # Force admission to island 0 by making seed in island 0 the parent.
+    strat.admit(f0, iteration=1)
+    # Manually craft a failure whose target_island is 1.
+    f1_program = _mk("f1", code="z = 8\n", parent_id="seed", score=0.0, iteration=2)
+    # The seed copy in island 1 is also called "seed" (initialize copies the seed
+    # into every island with the same id only for island 0; for islands 1+, the
+    # copy gets a fresh uuid). Find the island-1 seed copy and use that as parent.
+    island1_seed = next(pid for pid in strat.islands[1] if pid in strat.programs)
+    f1_program = Program(
+        id="f1",
+        source_code=f1_program.source_code,
+        parent_id=island1_seed,
+        generation=1,
+        iteration_found=2,
+        timestamp=f1_program.timestamp,
+        metrics=f1_program.metrics,
+        complexity=f1_program.complexity,
+        diversity=f1_program.diversity,
+        island=1,
+        feature_coords={},
+        metadata={},
+    )
+    strat.admit(f1_program, iteration=2)
+
+    only_island_0 = strat.recent_failures(n=10, island_idx=0)
+    only_island_1 = strat.recent_failures(n=10, island_idx=1)
+    assert all(f.parent_island == 0 for f in only_island_0)
+    assert all(f.parent_island == 1 for f in only_island_1)
+    assert len(only_island_0) >= 1
+    assert len(only_island_1) >= 1

@@ -95,6 +95,28 @@ def test_run_store_archive_cells(tmp_path: Path, record_io):
     assert out == {(0, "1,2"): "p3", (0, "3,4"): "p2", (1, "1,2"): "p4"}
 
 
+def test_run_store_replace_archive_cells_removes_stale_rows(tmp_path: Path, record_io):
+    db = tmp_path / "run.db"
+
+    def run() -> dict:
+        store = RunStore(db)
+        try:
+            store.upsert_archive_cell(0, "old", "p_old")
+            store.upsert_archive_cell(1, "also_old", "p_other")
+            store.replace_archive_cells([(0, "new", "p_new")])
+            return store.archive_cells()
+        finally:
+            store.close()
+
+    out = record_io(
+        module="src/ranking_evolved/core/run_store.py",
+        function="RunStore.replace_archive_cells",
+        input={"cells": [(0, "new", "p_new")]},
+        run=run,
+    )
+    assert out == {(0, "new"): "p_new"}
+
+
 def test_run_store_transaction_rollback(tmp_path: Path, record_io):
     db = tmp_path / "run.db"
 

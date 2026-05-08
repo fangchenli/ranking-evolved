@@ -19,6 +19,7 @@ Two presets are useful out of the box:
     Hard slowdown (`ratio_d > hard_slowdown_threshold`) zeroes that
     dataset's latency_score and trips a `latency_penalty_triggered` flag.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -44,9 +45,19 @@ class LatencyConfig:
 
     enabled: bool = False
     # Where the baseline median per-query latency comes from.
-    # "seed" — measure the seed program once before the evolution loop.
-    # "fixed" — read from a static JSON file (future; not yet wired).
+    #   "seed"     — measure the seed program once before the evolution loop.
+    #   "external" — load from a static JSON file written by an external
+    #                baseline (e.g. tasks/late_interaction/compare_baselines.py
+    #                emits one per device). The file must carry a
+    #                `_fingerprint.device` field; the controller asserts it
+    #                matches the runtime device before using the baseline.
+    #   "fixed"    — reserved.
     baseline_source: str = "seed"
+    # Path to the baseline JSON when `baseline_source == "external"`.
+    # `${EVAL_DEVICE}` is interpolated to the resolved device ("cpu" / "cuda")
+    # so a single config can target either host (e.g.
+    # "tasks/late_interaction/baselines/fastplaid_baseline.${EVAL_DEVICE}.json").
+    baseline_path: str = ""
     relative_to: str = "seed"
     # Number of queries to run untimed before the timed phase, per dataset.
     warmup_queries: int = 20
@@ -64,12 +75,39 @@ class LatencyConfig:
 
 
 @dataclass
+class AggregationConfig:
+    """How per-dataset metrics are combined into a single scalar.
+
+    `mode="arithmetic"` (default, legacy) — arithmetic mean across datasets.
+    A catastrophic regression on one dataset is diluted by the others.
+
+    `mode="geometric"` — geometric mean across datasets, computed as
+    `exp(mean(log(max(x, eps))))`. A near-zero on any one dataset drives the
+    aggregate near zero. Use this when you want a candidate that flops on
+    one dataset to be uncompetitive regardless of how good it is on the rest.
+    `eps` is the floor inside the log to avoid log(0); a small positive
+    value (default 1e-3) leaves "good" scores essentially unchanged but
+    keeps zeros from collapsing the geometric mean to exactly 0.
+    """
+
+    mode: str = "arithmetic"
+    eps: float = 1e-3
+
+
+@dataclass
 class ObjectiveConfig:
     """Top-level objective config.
 
     `recall_k` is also the `top_k` passed to `bm25.rank(...)` during
     evaluation, so that recall@k and the timed retrieval phase use the
     same retrieval depth.
+
+    `min_recall` (default 0.0 = off): if any dataset's recall@recall_k falls
+    below this floor, the candidate's combined_score becomes 0 and
+    `recall_floor_triggered` is set to 1.0. The motivation is that a
+    candidate that collapses on the largest corpus is not a usable solution
+    regardless of how fast or accurate it is on the smaller ones; we don't
+    want it occupying archive cells or seeding offspring.
     """
 
     name: str = "recall100_ndcg10"
@@ -77,3 +115,5 @@ class ObjectiveConfig:
     ndcg_k: int = 10
     weights: ObjectiveWeights = field(default_factory=ObjectiveWeights)
     latency: LatencyConfig = field(default_factory=LatencyConfig)
+    aggregation: AggregationConfig = field(default_factory=AggregationConfig)
+    min_recall: float = 0.0

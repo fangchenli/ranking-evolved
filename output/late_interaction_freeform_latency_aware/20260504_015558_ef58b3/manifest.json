@@ -1,0 +1,15 @@
+{
+  "run_id": "20260504_015558_ef58b3",
+  "task": "late_interaction_freeform_latency_aware",
+  "config_path": "tasks/late_interaction/configs/freeform_latency_aware.yaml",
+  "git_sha": "653003a8603bc18b93028b57652be16ad62aa2e1",
+  "git_dirty": true,
+  "uv_lock_sha256": "6e10c59c51a6edeb3953173794da7364c7f859451d3a49882f8db7e0503a1cb5",
+  "host": "Jimmys-MacBook-Pro-1411.local",
+  "platform": "macOS-26.3.1-arm64-arm-64bit",
+  "python_version": "3.11.5",
+  "started_at": "2026-05-04T08:55:58.754520+00:00",
+  "ended_at": "2026-05-04T18:18:09.234652+00:00",
+  "exit_status": "ok",
+  "extra": {}
+}

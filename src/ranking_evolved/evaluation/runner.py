@@ -124,10 +124,14 @@ def _load_evaluate(path: Path) -> Callable[[str], Any]:
     # in sys.modules during class construction. If the module isn't there,
     # sys.modules.get(...) returns None and `.__dict__` raises AttributeError.
     sys.modules[module_name] = module
-    # Put the evaluator file's directory on sys.path so its sibling imports
-    # (e.g. `from evaluator_parallel_worker import ...`) resolve. Stays on
+    # Put the project root and evaluator file's directory on sys.path so
+    # repo-local imports (`tasks.foo...`) and sibling imports
+    # (`from evaluator_parallel_worker import ...`) resolve. This stays on
     # sys.path for the lifetime of the process — same scope evaluator workers
     # need anyway when they're spawned by the evaluator at eval time.
+    project_root = _find_project_root(path.resolve())
+    if project_root is not None and str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
     parent = str(path.resolve().parent)
     if parent not in sys.path:
         sys.path.insert(0, parent)
@@ -140,6 +144,14 @@ def _load_evaluate(path: Path) -> Callable[[str], Any]:
     if not callable(fn):
         raise AttributeError(f"Evaluator module {path} missing `evaluate(program_path)`")
     return fn
+
+
+def _find_project_root(path: Path) -> Path | None:
+    """Find the nearest ancestor that looks like the repository root."""
+    for candidate in [path.parent, *path.parents]:
+        if (candidate / "pyproject.toml").exists() or (candidate / "tasks").is_dir():
+            return candidate
+    return None
 
 
 def _normalize(raw: Any, duration: float) -> EvaluationResult:

@@ -1,0 +1,185 @@
+# Late-interaction freeform evolution — TOY config for 20-step diagnostic runs.
+#
+# Same task / seed / evaluator / objective / proposer as
+# freeform_latency_aware.yaml. Differs in two axes:
+#
+# 1. Search params shrunk so 20 steps stress every code path:
+#    - num_islands=2  → migration fires within 20 iters at interval=4.
+#    - feature_bins=3 → 9 cells per island; collisions are likely, so
+#                       cell-replacement and eviction get exercised early.
+#    - archive_size=8 → ≥ 4*num_islands; in-island exploitation falls back
+#                       to global only when truly empty.
+#    - exploration_ratio=0.4, exploitation_ratio=0.4, random=0.2 → all
+#                       three sampling modes fire in 20 steps.
+#    - migration_interval=4, migration_rate=0.5 → at least one migration
+#                       event observable in the run log.
+#
+# 2. Evaluator runs only on the smallest dataset (beir_fiqa) with a
+#    20-query subset — wall-clock per iteration drops from minutes to
+#    ~5–15 s on CPU, so 20 iterations finish in a few minutes.
+#
+# Run:
+#   uv run ranking-evolved run \
+#     --config tasks/late_interaction/configs/freeform_latency_aware_toy.yaml \
+#     --replay --max-iterations 20
+#
+# After the run, grep `[evo-diag]` lines from logs/run.log to verify:
+#   - bootstrap line: `diversity_anchor_pinned=True`, every island sized 1
+#   - sample lines: top/recent/inspirations come from the parent's island
+#                   (diff against `iter NNNN island=K parent=...`); some
+#                   inspiration entries with score 0.0000 should NOT appear
+#                   (they're rejected before they can be admitted)
+#   - admit lines: `admitted=REJECT cell=(none)` for any score-0 child
+#                  (no admission to MAP-Elites, no archive growth, no
+#                  evicted_program_id); `failure_buffer` increments
+#   - admit lines for non-zero children: `admitted=yes cell=A-B` and
+#                  `archive_size`/`island_sizes` advance
+#   - migration_fired=True at least once (look in the trace.jsonl row)
+#   - prompt_chars stays roughly flat (not growing linearly with archive)
+#                  because context programs render as diffs, not full source
+
+task:
+  seed: tasks/late_interaction/seeds/freeform.py
+  evaluator: tasks/late_interaction/evaluator.py
+
+evolution:
+  max_iterations: 20
+  random_seed: 42
+  capture_replay: true
+  capture_replay_every: 1
+
+search:
+  algorithm: map_elites_islands
+  population_size: 16
+  archive_size: 8           # = 4 * num_islands; exercises in-island
+                            # exploitation without forcing global fallback.
+  num_islands: 2
+  migration_interval: 4     # Migration WILL fire in a 20-step run.
+  migration_rate: 0.5
+  exploration_ratio: 0.40   # All three parent-sampling modes fire often.
+  exploitation_ratio: 0.40
+  feature_dimensions: [complexity, diversity]
+  feature_bins: 3           # 3x3 = 9 cells per island; cell collisions
+                            # surface within the first few iterations.
+  num_inspirations: 8       # Headroom for dedup against recent + top.
+  complexity_metric: ast_nodes
+
+proposer:
+  kind: openai_responses
+  models:
+    - {name: "gpt-5.2", weight: 1.0}
+  api_base: "https://api.openai.com/v1"
+  api_key: "${OPENAI_API_KEY}"
+  max_tokens: 32768
+  reasoning_effort: low     # `low` keeps proposal latency in check for
+                            # the toy run; production config uses `medium`.
+  timeout: 300
+  retries: 3
+  candidate_retries: 2
+
+prompt:
+  diff_based: true
+  num_recent_programs: 1
+  num_top_programs: 1
+  num_diverse_programs: 5
+  num_failed_attempts: 3
+  include_artifacts: true
+  system_message: |
+    You are inventing a late-interaction retrieval algorithm over fixed
+    contextualized token embeddings. The seed is exact ColBERT MaxSim:
+    score(q, d) = sum_i max_j q_i dot d_j. You may not retrain or re-encode
+    embeddings; your only lever is the retrieval algorithm.
+
+    This is a TOY configuration: only beir_fiqa with 20 queries is
+    evaluated, so any algorithm that touches all docs will be slow but
+    correct. Aim for 1 coherent algorithmic change per iteration.
+
+    Objective:
+
+      combined_score = 0.40 * agg_recall@1000
+                     + 0.30 * agg_ndcg@10
+                     + 0.30 * agg_latency_score
+
+      latency_ratio_d  = candidate_median_query_latency_ms_d
+                       / exact_maxsim_median_query_latency_ms_d   (per dataset)
+      latency_score_d  = 1 / (1 + latency_ratio_d)
+      agg_<metric>     = geometric mean over datasets
+                         (a near-zero on ANY dataset drops the aggregate near zero)
+      if a dataset's ratio > 8x: that dataset's latency_score = 0
+      if any dataset's recall@1000 < 0.10: combined_score = 0 (candidate rejected)
+
+    The latency baseline is exact MaxSim. At parity, latency_score is 0.5.
+    To improve the score, be faster without sacrificing recall, or find a
+    scoring/indexing rule that improves quality on the fixed embeddings.
+
+    Design rules:
+    - Prefer one coherent algorithmic idea over stacked local tweaks.
+    - Constants must be interpretable budgets, probabilities, dimensions,
+      bin counts, or thresholds with a reason.
+    - No dataset-name branches, quality-floor gates, ablation switches,
+      feature flags, or external data/services.
+    - Preserve only the public `LateInteractionRetriever.build(docs)` and
+      `search(queries, top_k) -> dict[query_id, list[(doc_id, score)]]`
+      surface.
+
+    Editing format:
+
+    Use SEARCH/REPLACE diffs only. SEARCH must match the current code exactly.
+    REPLACE contains the edited code.
+
+evaluation:
+  timeout: 600
+  isolation: inline
+  cascade: false
+  # Toy run: only the smallest dataset, only 20 queries, single timed
+  # repeat. Wall-clock per iteration ≈ 5–15s on CPU.
+  env:
+    EVAL_DEVICE: cpu
+    EVAL_DATASETS: beir_fiqa
+    EVAL_SAMPLE_QUERIES: "20"
+    EVAL_WARMUP_QUERIES: "5"
+    EVAL_TIMED_REPEATS: "1"
+    EVAL_PROGRESS: "1"
+
+objective:
+  name: recall1000_ndcg10_latency
+  recall_k: 1000
+  ndcg_k: 10
+  weights:
+    recall: 0.40
+    ndcg: 0.30
+    latency: 0.30
+  aggregation:
+    mode: geometric
+    eps: 1.0e-3
+  min_recall: 0.10
+  latency:
+    enabled: true
+    baseline_source: external
+    baseline_path: tasks/late_interaction/baselines/exact_maxsim.${EVAL_DEVICE}.json
+    relative_to: external
+    warmup_queries: 5
+    timed_repeats: 1
+    aggregation: median_per_query
+    ratio_transform: inverse_one_plus_ratio
+    hard_slowdown_threshold: 8.0
+    penalty_mode: zero_latency_score
+
+trace:
+  enabled: true
+  include_prompts: true
+
+logging:
+  level: INFO
+  debug_log: false
+  run_log_max_mb: 10
+  run_log_backups: 5
+  proposer_log_max_mb: 50
+  proposer_log_backups: 3
+  proposer_log_gzip: true
+  evaluator_log_max_mb: 25
+  evaluator_log_backups: 3
+
+run_store:
+  backend: sqlite
+  vacuum_on_close: true

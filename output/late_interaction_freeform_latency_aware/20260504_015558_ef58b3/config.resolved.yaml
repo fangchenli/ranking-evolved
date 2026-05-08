@@ -1,0 +1,152 @@
+task:
+  seed: tasks/late_interaction/seeds/freeform.py
+  evaluator: tasks/late_interaction/evaluator.py
+evolution:
+  max_iterations: 50
+  random_seed: 42
+  capture_replay: true
+  capture_replay_every: 1
+search:
+  population_size: 30
+  archive_size: 6
+  num_islands: 3
+  migration_interval: 8
+  migration_rate: 0.15
+  feature_dimensions:
+  - complexity
+  - diversity
+  feature_bins: 4
+  feature_bins_per_dim: null
+  elite_selection_ratio: 0.2
+  exploration_ratio: 0.3
+  exploitation_ratio: 0.6
+  num_inspirations: 5
+  random_seed: 42
+  diversity_reference_size: 20
+proposer:
+  kind: openai_responses
+  models:
+  - name: gpt-5.2
+    weight: 1.0
+  api_base: https://api.openai.com/v1
+  api_key: '***REDACTED***'
+  temperature: 0.7
+  max_tokens: 32768
+  timeout: 300
+  retries: 3
+  reasoning_effort: medium
+  candidate_retries: 3
+  transcript_path: null
+  proposals_jsonl: null
+prompt:
+  diff_based: true
+  num_recent_programs: 1
+  num_top_programs: 1
+  num_diverse_programs: 2
+  include_artifacts: true
+  system_message: "You are inventing a late-interaction retrieval algorithm over fixed\n\
+    contextualized token embeddings. The seed is exact ColBERT MaxSim:\nscore(q, d)\
+    \ = sum_i max_j q_i dot d_j. You may not retrain or re-encode\nembeddings; your\
+    \ only lever is the retrieval algorithm.\n\nThis is not a reproduction task. Published\
+    \ systems such as ColBERTv2,\nPLAID/FastPLAID, XTR, WARP, ScaNN, FAISS IVF/PQ/OPQ,\
+    \ and related ANN\nmethods are prior art and sources of design pressure, not templates\
+    \ to\ncopy. Seek a new, elegant principle that changes candidate generation,\n\
+    scoring, indexing, pruning, compression, or reranking in a fundamental\nway.\n\
+    \nObjective:\n\n  combined_score = 0.40 * agg_recall@1000\n                 +\
+    \ 0.30 * agg_ndcg@10\n                 + 0.30 * agg_latency_score\n\n  latency_ratio_d\
+    \  = candidate_median_query_latency_ms_d\n                   / exact_maxsim_median_query_latency_ms_d\
+    \   (per dataset)\n  latency_score_d  = 1 / (1 + latency_ratio_d)\n  agg_<metric>\
+    \     = geometric mean over datasets\n                     (a near-zero on ANY\
+    \ dataset drops the aggregate near zero)\n  if a dataset's ratio > 8x: that dataset's\
+    \ latency_score = 0\n  if any dataset's recall@1000 < 0.10: combined_score = 0\
+    \ (candidate rejected)\n\nThe latency baseline is exact MaxSim. At parity, latency_score\
+    \ is 0.5.\nTo improve the score, be faster without sacrificing recall, or find\
+    \ a\nscoring/indexing rule that improves quality on the fixed embeddings.\nGeometric\
+    \ mean and the recall floor mean a method that flops on one\ncorpus is uncompetitive\
+    \ regardless of how good it looks on the others \u2014\nyour budget rules must\
+    \ scale with corpus size.\n\nEvaluation datasets (chosen to span ~8x corpus-size\
+    \ range):\n  beir_fiqa                    (~58K docs, financial Q&A, balanced\
+    \ quality)\n  bright_stackoverflow         (107K docs, programming Q&A, sparse\
+    \ qrels)\n  bright_theoremqa_questions   (188K docs, math problems, biggest latency\
+    \ target)\n\nDesign rules:\n- Prefer one coherent algorithmic idea over stacked\
+    \ local tweaks.\n- Constants must be interpretable budgets, probabilities, dimensions,\n\
+    \  bin counts, or thresholds with a reason. Do not hide magic numbers in\n  the\
+    \ code.\n- No dataset-name branches, quality-floor gates, ablation switches,\n\
+    \  feature flags, or external data/services.\n- No ad-hoc heuristic add-ons unless\
+    \ they follow from the method and are\n  justified by the metrics.\n- If local\
+    \ edits stall, restructure the whole pipeline: redesign\n  `build()`, replace\
+    \ `_maxsim_score`, add index artifacts, change\n  candidate generation, or rerank\
+    \ a shortlist. Preserve only the public\n  `LateInteractionRetriever.build(docs)`\
+    \ and\n  `search(queries, top_k) -> dict[query_id, list[(doc_id, score)]]`\n \
+    \ surface.\n\nYou may freely:\n\n- precompute centroids, posting lists, residuals,\
+    \ summary vectors,\n  upper bounds, compressed representations, or other deterministic\
+    \ index\n  structures in `build()`\n- introduce candidate generation, query-token\
+    \ weighting, document-token\n  pruning, early exit, adaptive budgets, hierarchical\
+    \ scoring,\n  shortlist reranking, or vectorized NumPy/einsum/sparse operations\n\
+    - eliminate the brute-force Python loop when a cleaner batched or indexed\n  design\
+    \ exists\n\nYou may NOT:\n  - change the file's public surface \u2014 `LateInteractionRetriever.build`\n\
+    \    / `search` signatures and the returned dict shape are contractual\n  - touch\
+    \ any file outside the seed\n  - call external services or load extra data\n \
+    \ - re-encode the embeddings \u2014 they are fixed inputs from\n    `tasks.late_interaction.embedding_cache.TokenEmbeddingStore`\n\
+    \  - use feature flags, dataset-name lookups, or ablation gates\n\nEditing format:\n\
+    \nUse SEARCH/REPLACE diffs only. SEARCH must match the current code exactly.\n\
+    REPLACE contains the edited code. Prefer one or a few coherent edits; if\na larger\
+    \ rewrite is needed, do it cleanly and keep the public surface\nintact.\n\nUse\
+    \ feedback deliberately:\n\nThe per-dataset metrics show you `recall@{10,100,1000}`,\
+    \ `ndcg@10`,\n`p50/p95/mean query latency`, `build_time_ms`. The latency_ratio\
+    \ per\ndataset tells you how far you are from exact MaxSim's speed on that\ncorpus.\n\
+    \nIf recall improves but latency collapses, the change is too expensive;\nlook\
+    \ for a precomputed or lazy form of the same idea. If latency\nimproves but recall\
+    \ collapses, the approximation is too aggressive;\nwiden the candidate pool or\
+    \ refine the score. The best candidates push\nthe frontier, not just one axis.\n"
+evaluation:
+  timeout: 1800
+  isolation: inline
+  cascade: false
+  parallelism: {}
+  env:
+    EVAL_DEVICE: cpu
+    EVAL_DATASETS: beir_fiqa,bright_stackoverflow,bright_theoremqa_questions
+    EVAL_SAMPLE_QUERIES: '1000000000'
+    EVAL_WARMUP_QUERIES: '10'
+    EVAL_TIMED_REPEATS: '1'
+    EVAL_PROGRESS: '1'
+objective:
+  name: recall1000_ndcg10_latency
+  recall_k: 1000
+  ndcg_k: 10
+  weights:
+    recall: 0.4
+    ndcg: 0.3
+    latency: 0.3
+  latency:
+    enabled: true
+    baseline_source: external
+    baseline_path: tasks/late_interaction/baselines/exact_maxsim.cpu.json
+    relative_to: external
+    warmup_queries: 10
+    timed_repeats: 1
+    aggregation: median_per_query
+    ratio_transform: inverse_one_plus_ratio
+    hard_slowdown_threshold: 8.0
+    penalty_mode: zero_latency_score
+  aggregation:
+    mode: geometric
+    eps: 0.001
+  min_recall: 0.1
+trace:
+  enabled: true
+  include_prompts: true
+logging:
+  level: INFO
+  debug_log: false
+  run_log_max_mb: 10
+  run_log_backups: 5
+  proposer_log_max_mb: 50
+  proposer_log_backups: 3
+  proposer_log_gzip: true
+  evaluator_log_max_mb: 25
+  evaluator_log_backups: 3
+run_store:
+  backend: sqlite
+  vacuum_on_close: true

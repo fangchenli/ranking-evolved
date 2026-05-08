@@ -1,11 +1,11 @@
 """Pure objective math: latency transform, hard-slowdown, combined score.
 
-This module is the BM25 retrieval objective. It is intentionally
-side-effect-free so the formulas can be unit-tested without spinning up
-the evaluator. The evolution algorithm is independent and is tested in
-`tests/search/test_evolution_algo_invariants.py`.
+This module is the retrieval objective shared by every task. It is
+intentionally side-effect-free so the formulas can be unit-tested without
+spinning up the evaluator. The evolution algorithm is independent and is
+tested in `tests/search/test_evolution_algo_invariants.py`.
 
-Formulas (when `latency.enabled=True`):
+Per-dataset signals (when `latency.enabled=True`):
 
   ratio_d            = candidate_query_latency_median_ms_d
                        / baseline_query_latency_median_ms_d
@@ -16,23 +16,40 @@ Formulas (when `latency.enabled=True`):
       latency_score_d                = 1.0 / (1.0 + ratio_d)
       latency_penalty_triggered_d    = 0.0
 
-  avg_latency_score          = mean(latency_score_d)
-  latency_penalty_triggered  = max(latency_penalty_triggered_d)
+Aggregation across datasets:
 
-  effectiveness_score = w.recall * avg_recall@recall_k
-                      + w.ndcg   * avg_ndcg@ndcg_k
+  avg_recall, avg_ndcg, avg_latency_score = aggregate(per-dataset values)
+
+  - aggregation.mode="arithmetic" (default, legacy): plain mean.
+  - aggregation.mode="geometric": exp(mean(log(max(x, eps)))). A near-zero
+    on any dataset drops the aggregate near zero — useful when you don't
+    want one-dataset wins to mask catastrophic regressions on others.
+
+Combined score:
+
+  effectiveness_score = w.recall * avg_recall + w.ndcg * avg_ndcg
   latency_component   = w.latency * avg_latency_score
   combined_score      = effectiveness_score + latency_component
+
+Recall floor:
+
+  If `min_recall > 0` and any dataset's recall@recall_k falls below
+  `min_recall`, combined_score is set to 0 and `recall_floor_triggered`
+  is 1.0. The candidate is treated as unusable and will lose every
+  cell-replacement contest in MAP-Elites; aggregate fields are still
+  reported for transparency.
 
 When `latency.enabled=False` the latency component is 0 regardless of
 weights and no per-dataset latency lookup is required.
 """
+
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Mapping
 
-from ..config.objective import ObjectiveConfig
+from ..config.objective import AggregationConfig, ObjectiveConfig
 
 
 def latency_score_from_ratio(ratio: float) -> float:
@@ -73,6 +90,8 @@ class ObjectiveOutcome:
     avg_query_latency_median_ms: float
     avg_baseline_query_latency_median_ms: float
     latency_penalty_triggered: float
+    recall_floor_triggered: float
+    aggregation_mode: str
     per_dataset: dict[str, dict[str, float]]
 
 
@@ -84,6 +103,14 @@ def _ndcg_key(ndcg_k: int) -> str:
     return f"ndcg@{ndcg_k}"
 
 
+def _metric_value(metrics: Mapping[str, float], canonical: str, alias: str) -> float | None:
+    if canonical in metrics:
+        return float(metrics[canonical])
+    if alias in metrics:
+        return float(metrics[alias])
+    return None
+
+
 def compute_objective(
     per_dataset_metrics: Mapping[str, Mapping[str, float]],
     baseline_latency_by_dataset: Mapping[str, float] | None,
@@ -92,8 +119,9 @@ def compute_objective(
     """Resolve the configured objective from raw per-dataset metrics.
 
     `per_dataset_metrics[dataset]` must contain at least `recall@<recall_k>`
-    and `ndcg@<ndcg_k>`. When `cfg.latency.enabled` is True, the same dict
-    must also contain `query_latency_median_ms`.
+    / `recall_at_<recall_k>` and `ndcg@<ndcg_k>` / `ndcg_at_<ndcg_k>`.
+    When `cfg.latency.enabled` is True, the same dict must also contain
+    `query_latency_median_ms`.
 
     `baseline_latency_by_dataset` is required when `cfg.latency.enabled`.
     Datasets missing from the baseline map are skipped from the latency
@@ -101,6 +129,8 @@ def compute_objective(
     """
     rk = _recall_key(cfg.recall_k)
     nk = _ndcg_key(cfg.ndcg_k)
+    recall_alias = f"recall_at_{cfg.recall_k}"
+    ndcg_alias = f"ndcg_at_{cfg.ndcg_k}"
 
     recalls: list[float] = []
     ndcgs: list[float] = []
@@ -115,12 +145,14 @@ def compute_objective(
 
     for dataset, metrics in per_dataset_metrics.items():
         ds_out: dict[str, float] = {}
-        if rk in metrics:
-            recalls.append(float(metrics[rk]))
-            ds_out[rk] = float(metrics[rk])
-        if nk in metrics:
-            ndcgs.append(float(metrics[nk]))
-            ds_out[nk] = float(metrics[nk])
+        recall_value = _metric_value(metrics, rk, recall_alias)
+        if recall_value is not None:
+            recalls.append(recall_value)
+            ds_out[rk] = recall_value
+        ndcg_value = _metric_value(metrics, nk, ndcg_alias)
+        if ndcg_value is not None:
+            ndcgs.append(ndcg_value)
+            ds_out[nk] = ndcg_value
 
         if cfg.latency.enabled:
             cand_ms = float(metrics.get("query_latency_median_ms", 0.0))
@@ -157,21 +189,33 @@ def compute_objective(
 
         out_per_dataset[dataset] = ds_out
 
-    avg_recall = _mean(recalls)
-    avg_ndcg = _mean(ndcgs)
-    avg_latency_score = _mean(latency_scores) if latency_scores else 0.0
+    aggregator = _make_aggregator(cfg.aggregation)
+    # Effectiveness signals (recall, ndcg) and latency_score are aggregated
+    # under the configured mode. Latency raw averages (ratios, ms) stay on
+    # arithmetic mean — they're informational, not part of the score.
+    avg_recall = aggregator(recalls)
+    avg_ndcg = aggregator(ndcgs)
+    avg_latency_score = aggregator(latency_scores) if latency_scores else 0.0
     avg_ratio = _mean(latency_ratios) if latency_ratios else 0.0
     avg_cand = _mean(cand_latencies) if cand_latencies else 0.0
     avg_base = _mean(base_latencies) if base_latencies else 0.0
+
+    # Recall floor: any dataset below `min_recall` zeroes the entire
+    # candidate. We still report aggregates for transparency but combined
+    # score collapses so the candidate cannot win cell contests in MAP-Elites.
+    recall_floor_triggered = 0.0
+    if cfg.min_recall > 0.0 and recalls:
+        if any(r < cfg.min_recall for r in recalls):
+            recall_floor_triggered = 1.0
 
     w = cfg.weights
     recall_component = w.recall * avg_recall
     ndcg_component = w.ndcg * avg_ndcg
     effectiveness = recall_component + ndcg_component
-    latency_component = (
-        w.latency * avg_latency_score if cfg.latency.enabled else 0.0
-    )
+    latency_component = w.latency * avg_latency_score if cfg.latency.enabled else 0.0
     combined = effectiveness + latency_component
+    if recall_floor_triggered:
+        combined = 0.0
 
     return ObjectiveOutcome(
         combined_score=combined,
@@ -186,7 +230,32 @@ def compute_objective(
         avg_query_latency_median_ms=avg_cand,
         avg_baseline_query_latency_median_ms=avg_base,
         latency_penalty_triggered=any_penalty,
+        recall_floor_triggered=recall_floor_triggered,
+        aggregation_mode=cfg.aggregation.mode,
         per_dataset=out_per_dataset,
+    )
+
+
+def _make_aggregator(cfg: AggregationConfig):
+    mode = (cfg.mode or "arithmetic").lower()
+    if mode == "arithmetic":
+        return _mean
+    if mode == "geometric":
+        eps = float(cfg.eps)
+        if eps <= 0.0:
+            raise ValueError(f"aggregation.eps must be > 0, got {cfg.eps!r}")
+
+        def _geom(values: list[float]) -> float:
+            if not values:
+                return 0.0
+            log_sum = 0.0
+            for v in values:
+                log_sum += math.log(max(float(v), eps))
+            return float(math.exp(log_sum / len(values)))
+
+        return _geom
+    raise ValueError(
+        f"unsupported aggregation.mode={cfg.mode!r}; expected 'arithmetic' or 'geometric'"
     )
 
 

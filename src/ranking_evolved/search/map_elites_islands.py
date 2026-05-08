@@ -27,15 +27,21 @@ the plan: `ProgramDatabase.add` (database.py:211), `_calculate_feature_coords`
 (database.py:834), `should_migrate` (database.py:1775), `migrate_programs`
 (database.py:1780), `sample` (database.py:382), `_sample_parent`/`_sample_inspirations`.
 """
+
 from __future__ import annotations
 
+import ast
 import hashlib
 import math
 import random
 import time
 import uuid
+from bisect import bisect_left, bisect_right
+from collections import deque
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
-from typing import Any, Iterable
+from difflib import SequenceMatcher
+from typing import Any
 
 from ..core.types import (
     AdmissionDecisions,
@@ -44,7 +50,6 @@ from ..core.types import (
     SamplingDecisions,
 )
 from .base import register_strategy
-
 
 # ----------------------------------------------------------------------------
 # config
@@ -62,16 +67,48 @@ class MapElitesIslandsConfig:
     feature_bins: int = 10
     feature_bins_per_dim: dict[str, int] | None = None
     elite_selection_ratio: float = 0.2  # OpenEvolve default
-    exploration_ratio: float = 0.2      # OpenEvolve default
-    exploitation_ratio: float = 0.7     # OpenEvolve default
+    exploration_ratio: float = 0.2  # OpenEvolve default
+    exploitation_ratio: float = 0.7  # OpenEvolve default
     num_inspirations: int = 5
     random_seed: int = 42
-    diversity_reference_size: int = 20
+    # `complexity` feature dimension uses AST node count of the program's
+    # source (comments + docstrings are absent from the AST), so cosmetic
+    # comment edits don't move programs between cells. Set to "char_count"
+    # to fall back to len(source_code) (legacy behavior).
+    complexity_metric: str = "ast_nodes"
+    # Complexity is binned by live-population percentile rank by default.
+    # When a new min/max or cluster shape emerges, existing programs are
+    # rebucketed against the current live island population. Set to "minmax"
+    # to use the older running-min/running-max scaler.
+    complexity_binning: str = "adaptive_percentile"
+    # `diversity` is computed against (a) the seed's normalized core source
+    # (always pinned) and (b) the live archive's normalized core sources.
+    # The reference is "rolling" because archive membership changes as the
+    # search progresses; failed (score=0) programs are never admitted to the
+    # archive so they cannot pollute the diversity yardstick.
+    failure_buffer_size: int = 12
 
     def bins_for(self, dim: str) -> int:
         if self.feature_bins_per_dim and dim in self.feature_bins_per_dim:
             return self.feature_bins_per_dim[dim]
         return self.feature_bins
+
+
+@dataclass(frozen=True)
+class FailureRecord:
+    """A score=0 / crashed candidate captured for prompt feedback.
+
+    Carries enough state for the prompt builder to render `(error_summary,
+    diff_against_parent)` even after the parent has been evicted from the
+    live population. Bounded ring buffer; see `failure_buffer_size`.
+    """
+
+    iteration: int
+    parent_id: str | None
+    parent_island: int
+    parent_source_code: str
+    child_source_code: str
+    error_summary: str
 
 
 # ----------------------------------------------------------------------------
@@ -90,13 +127,16 @@ class MapElitesIslandsStrategy:
     """
 
     def __init__(self, config: MapElitesIslandsConfig):
+        if config.complexity_binning not in {"adaptive_percentile", "minmax"}:
+            raise ValueError(
+                "complexity_binning must be 'adaptive_percentile' or 'minmax', "
+                f"got {config.complexity_binning!r}"
+            )
         self.config = config
         self.rng = random.Random(config.random_seed)
         self.programs: dict[str, Program] = {}
         self.islands: list[set[str]] = [set() for _ in range(config.num_islands)]
-        self.island_feature_maps: list[dict[str, str]] = [
-            {} for _ in range(config.num_islands)
-        ]
+        self.island_feature_maps: list[dict[str, str]] = [{} for _ in range(config.num_islands)]
         self.archive: set[str] = set()
         self.island_generations: list[int] = [0] * config.num_islands
         self.last_migration_generation: int = 0
@@ -106,8 +146,25 @@ class MapElitesIslandsStrategy:
 
         # Running stats per dim for minmax feature scaling.
         self._feature_stats: dict[str, dict[str, float]] = {}
-        # Reference set used to compute "diversity" via average edit distance.
-        self._diversity_reference: list[str] = []
+        # Sorted live values per adaptive-percentile dimension. Complexity is
+        # the only built-in adaptive dimension today.
+        self._feature_percentile_values: dict[str, list[float]] = {}
+        # Cache of `_normalized_core_source(code)` keyed by raw source. Strips
+        # comments + docstrings via the AST, so identical-algorithm-different-
+        # comments programs collapse to the same string for both complexity
+        # (AST node count) and diversity (string distance against archive).
+        self._core_source_cache: dict[str, str] = {}
+        # Pinned seed reference for the diversity metric. Set in `initialize`.
+        # The seed always anchors the diversity yardstick even after it is
+        # evicted from the archive — otherwise the metric would silently
+        # change definition mid-run.
+        self._diversity_seed_anchor: str | None = None
+        # Bounded ring buffer of recent score=0 / crashed candidates. The
+        # controller surfaces these to the next prompt under "Recent failed
+        # attempts" so the LLM avoids repeating the same broken approach.
+        self._recent_failures: deque[FailureRecord] = deque(
+            maxlen=max(1, int(config.failure_buffer_size))
+        )
 
     # ------------------------------------------------------------------
     # SearchStrategy Protocol surface
@@ -120,11 +177,20 @@ class MapElitesIslandsStrategy:
         an island is empty; doing it eagerly here makes the first iteration's
         replay snapshot match without special-casing.
         """
+        # Pin the seed's normalized core source as the diversity anchor.
+        # Children's diversity is measured against this anchor + the live
+        # archive's core sources (rolling sample).
+        self._diversity_seed_anchor = self._core_source(seed.source_code)
         seed_with_island = _with_island(seed, 0)
-        self._admit_into_island(seed_with_island, target_island=0, iteration=0)
+        # `force=True` bypasses the score=0 rejection that applies to evolved
+        # children: even a zero-scoring seed must bootstrap MAP-Elites or the
+        # population is empty and `_sample_parent` has nothing to return.
+        # Test fixtures (e.g. evolution_algo_test) intentionally seed at
+        # SCORE=0 to drive proposal-script behavior — that path stays alive.
+        self._admit_into_island(seed_with_island, target_island=0, iteration=0, force=True)
         for island_idx in range(1, self.config.num_islands):
             copy = _with_id_and_island(seed, island_idx, parent_id=seed.id)
-            self._admit_into_island(copy, target_island=island_idx, iteration=0)
+            self._admit_into_island(copy, target_island=island_idx, iteration=0, force=True)
         self.best_program_id = seed.id
 
     def sample(self, iteration: int) -> tuple[Program, list[Program]]:
@@ -142,9 +208,7 @@ class MapElitesIslandsStrategy:
         self.island_generations[parent_island] += 1
 
         # Step 2: admit the child.
-        admission = self._admit_into_island(
-            child, target_island=parent_island, iteration=iteration
-        )
+        admission = self._admit_into_island(child, target_island=parent_island, iteration=iteration)
 
         # Step 3: trigger migration if due.
         if self._should_migrate():
@@ -173,7 +237,7 @@ class MapElitesIslandsStrategy:
     def state_dict(self) -> dict[str, Any]:
         """Return a JSON-safe snapshot sufficient for exact in-run resume."""
         return {
-            "schema_version": 1,
+            "schema_version": 3,
             "programs": {pid: asdict(program) for pid, program in self.programs.items()},
             "islands": [sorted(island) for island in self.islands],
             "island_feature_maps": [dict(m) for m in self.island_feature_maps],
@@ -184,7 +248,9 @@ class MapElitesIslandsStrategy:
             "best_program_id": self.best_program_id,
             "island_best_programs": list(self.island_best_programs),
             "feature_stats": self._feature_stats,
-            "diversity_reference": list(self._diversity_reference),
+            "feature_percentile_values": self._feature_percentile_values,
+            "diversity_seed_anchor": self._diversity_seed_anchor,
+            "recent_failures": [asdict(f) for f in self._recent_failures],
             "rng_state": self.rng.getstate(),
         }
 
@@ -195,8 +261,11 @@ class MapElitesIslandsStrategy:
         island maps, feature-scaling stats, diversity reference, and RNG state
         instead of reconstructing approximately from evaluated programs.
         """
-        if int(state.get("schema_version", 0)) != 1:
-            raise ValueError(f"unsupported MAP-Elites state schema: {state.get('schema_version')!r}")
+        schema_version = int(state.get("schema_version", 0))
+        if schema_version not in (1, 2, 3):
+            raise ValueError(
+                f"unsupported MAP-Elites state schema: {state.get('schema_version')!r}"
+            )
 
         programs = state.get("programs") or {}
         self.programs = {
@@ -251,8 +320,34 @@ class MapElitesIslandsStrategy:
             str(dim): {str(k): float(v) for k, v in stats.items()}
             for dim, stats in (state.get("feature_stats") or {}).items()
         }
-        self._diversity_reference = [str(x) for x in state.get("diversity_reference", [])]
+        self._feature_percentile_values = {
+            str(dim): [float(v) for v in values]
+            for dim, values in (state.get("feature_percentile_values") or {}).items()
+        }
+        # Schema v2: persistent diversity anchor + recent-failure ring buffer.
+        # Schema v1 carried a `diversity_reference` list (now unused — diversity
+        # rolls over the live archive); just ignore it on resume.
+        anchor = state.get("diversity_seed_anchor")
+        self._diversity_seed_anchor = str(anchor) if anchor is not None else None
+        self._core_source_cache.clear()
+        self._recent_failures.clear()
+        for entry in state.get("recent_failures", []) or []:
+            try:
+                self._recent_failures.append(
+                    FailureRecord(
+                        iteration=int(entry["iteration"]),
+                        parent_id=entry.get("parent_id"),
+                        parent_island=int(entry.get("parent_island", 0)),
+                        parent_source_code=str(entry.get("parent_source_code") or ""),
+                        child_source_code=str(entry.get("child_source_code") or ""),
+                        error_summary=str(entry.get("error_summary") or ""),
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
         self.rng.setstate(_to_tuple(state["rng_state"]))
+        if not self._feature_percentile_values:
+            self._rebucket_feature_maps()
 
     def snapshot(self) -> PopulationSnapshot:
         # Flatten archive cells across islands for the snapshot:
@@ -282,12 +377,16 @@ class MapElitesIslandsStrategy:
         rng_seed_hash = hashlib.sha256(
             f"{self.config.random_seed}:{iteration}".encode()
         ).hexdigest()[:16]
-        # Top + previous: island-local, mirrors OpenEvolve iteration.py:60-61.
         parent_island = self._island_of(parent.id)
         if parent_island is None:
             parent_island = self.current_island
         top_ids = [p.id for p in self._top_programs(n=5, island_idx=parent_island)]
-        prev_ids = [p.id for p in self._top_programs(n=3, island_idx=parent_island)]
+        prev_ids = [
+            p.id
+            for p in self._recent_programs(
+                n=3, island_idx=parent_island, exclude_program_id=parent.id
+            )
+        ]
         return SamplingDecisions(
             rng_seed_hash=rng_seed_hash,
             parent_id=parent.id,
@@ -301,50 +400,88 @@ class MapElitesIslandsStrategy:
     def top_programs(self, n: int, island_idx: int | None = None) -> list[Program]:
         return self._top_programs(n=n, island_idx=island_idx)
 
+    def recent_programs(
+        self,
+        n: int,
+        island_idx: int | None = None,
+        *,
+        exclude_program_id: str | None = None,
+    ) -> list[Program]:
+        return self._recent_programs(
+            n=n, island_idx=island_idx, exclude_program_id=exclude_program_id
+        )
+
     # ------------------------------------------------------------------
     # internals: admission
     # ------------------------------------------------------------------
 
     def _admit_into_island(
-        self, program: Program, *, target_island: int, iteration: int
+        self,
+        program: Program,
+        *,
+        target_island: int,
+        iteration: int,
+        force: bool = False,
     ) -> AdmissionDecisions:
-        feature_coords_int = self._compute_feature_coords(program)
-        feature_coords_dict = {
-            dim: float(feature_coords_int[i])
-            for i, dim in enumerate(self.config.feature_dimensions)
-        }
-        program = _replace(program, island=target_island, feature_coords=feature_coords_dict)
+        # Stamp authoritative complexity/diversity from the source code BEFORE
+        # computing feature coords, so callers (controller) don't need to set
+        # these fields. Mirrors OpenEvolve's `_calculate_feature_coords` which
+        # owns both the metric and the binning.
+        complexity = self._compute_complexity(program.source_code)
+        diversity = self._compute_diversity(program)
+        program = _replace(program, complexity=complexity, diversity=diversity)
+
+        # Reject score=0 / crashed candidates from MAP-Elites entirely. They
+        # never own a cell, never enter the archive, never join the live
+        # population (so they cannot be sampled as parents). The failure
+        # record IS retained so the next prompt can show "do not repeat this".
+        # The bootstrap seed bypasses this check (`force=True`) — a zero-
+        # scoring seed still has to populate islands at iteration 0 or the
+        # search has nothing to sample as its first parent.
+        if not force and _is_failure(program):
+            self._record_failure(
+                program=program,
+                target_island=target_island,
+                iteration=iteration,
+            )
+            return AdmissionDecisions(
+                target_island=target_island,
+                feature_coords={},
+                cell_key="",
+                evicted_program_id=None,
+                migration_fired=False,
+                migration_details=None,
+            )
+
+        old_feature_maps = [dict(m) for m in self.island_feature_maps]
+        program = _replace(program, island=target_island, feature_coords={})
         self.programs[program.id] = program
-
-        cell_key = "-".join(str(c) for c in feature_coords_int)
-        island_map = self.island_feature_maps[target_island]
-        evicted: str | None = None
-
-        existing_id = island_map.get(cell_key)
-        should_replace = (
-            existing_id is None
-            or existing_id not in self.programs
-            or _fitness(program) > _fitness(self.programs[existing_id])
-        )
-        if should_replace:
-            if existing_id and existing_id in self.programs and existing_id != program.id:
-                evicted = existing_id
-                # OpenEvolve removes the evicted program from the island set
-                # when its cell is taken over.
-                self.islands[target_island].discard(existing_id)
-                if existing_id in self.archive:
-                    self.archive.discard(existing_id)
-                    self.archive.add(program.id)
-            island_map[cell_key] = program.id
-
         self.islands[target_island].add(program.id)
+
+        evicted: str | None = None
         self._update_archive(program)
         self._enforce_population_limit(exclude_program_id=program.id)
         self._update_best_program(program)
         self._update_island_best(program, target_island)
-        # Reference set for diversity stays bounded.
-        if len(self._diversity_reference) < self.config.diversity_reference_size:
-            self._diversity_reference.append(program.source_code)
+        self._rebucket_feature_maps()
+
+        program = self.programs.get(program.id, program)
+        feature_coords_dict = dict(program.feature_coords)
+        feature_coords_int = [
+            int(feature_coords_dict[dim]) for dim in self.config.feature_dimensions
+        ]
+        cell_key = "-".join(str(c) for c in feature_coords_int)
+        final_host = self.island_feature_maps[target_island].get(cell_key)
+        old_host = old_feature_maps[target_island].get(cell_key)
+        if final_host == program.id and old_host and old_host != program.id:
+            evicted = old_host
+            # Keep the existing admission semantics for direct cell takeover:
+            # the displaced cell host leaves the island-local sampling pool and
+            # archive, while the program row remains available for audit/resume.
+            final_hosts = set(self.island_feature_maps[target_island].values())
+            if old_host not in final_hosts:
+                self.islands[target_island].discard(old_host)
+                self.archive.discard(old_host)
 
         return AdmissionDecisions(
             target_island=target_island,
@@ -354,6 +491,50 @@ class MapElitesIslandsStrategy:
             migration_fired=False,
             migration_details=None,
         )
+
+    def _record_failure(
+        self,
+        *,
+        program: Program,
+        target_island: int,
+        iteration: int,
+    ) -> None:
+        """Save a compact failure record for the next prompt's feedback section."""
+        parent = self.programs.get(program.parent_id) if program.parent_id else None
+        parent_code = parent.source_code if parent else ""
+        err = str((program.metrics or {}).get("eval_error") or "").strip()
+        if err:
+            tail = err.splitlines()[-1] if "\n" in err else err
+            error_summary = tail[:240]
+        elif (program.metrics or {}).get("recall_floor_triggered"):
+            error_summary = "recall_floor_triggered (recall < min_recall on at least one dataset)"
+        else:
+            error_summary = "combined_score=0 (rejected by objective)"
+        self._recent_failures.append(
+            FailureRecord(
+                iteration=iteration,
+                parent_id=program.parent_id,
+                parent_island=target_island,
+                parent_source_code=parent_code,
+                child_source_code=program.source_code,
+                error_summary=error_summary,
+            )
+        )
+
+    def recent_failures(self, *, n: int, island_idx: int | None = None) -> list[FailureRecord]:
+        """Return up to `n` most-recent failures, newest first.
+
+        With `island_idx` set, restrict to failures whose attempted island
+        matches. The controller calls this once per iteration to feed the
+        prompt builder's "do not repeat" section.
+        """
+        if n <= 0 or not self._recent_failures:
+            return []
+        items = list(self._recent_failures)
+        if island_idx is not None:
+            items = [f for f in items if f.parent_island == island_idx]
+        items.reverse()
+        return items[:n]
 
     def _update_archive(self, program: Program) -> None:
         # Cell-eviction in `_admit_into_island` may have already swapped this
@@ -385,7 +566,8 @@ class MapElitesIslandsStrategy:
         n_remove = len(self.programs) - self.config.population_size
         protected = {self.best_program_id, exclude_program_id} - {None}
         sorted_by_fitness = sorted(
-            self.programs.values(), key=_fitness  # ascending: worst first
+            self.programs.values(),
+            key=_fitness,  # ascending: worst first
         )
         to_remove = []
         for p in sorted_by_fitness:
@@ -441,9 +623,7 @@ class MapElitesIslandsStrategy:
         archive = [pid for pid in self.archive if pid in self.programs]
         if not archive:
             return self._sample_exploration_parent()
-        in_island = [
-            pid for pid in archive if self.programs[pid].island == self.current_island
-        ]
+        in_island = [pid for pid in archive if self.programs[pid].island == self.current_island]
         pool = in_island or archive
         return self.programs[self.rng.choice(pool)]
 
@@ -494,7 +674,9 @@ class MapElitesIslandsStrategy:
             for _ in range(attempts):
                 perturbed = [
                     max(0, min(self.config.bins_for(dim) - 1, c + self.rng.randint(-2, 2)))
-                    for c, dim in zip(parent_coords, self.config.feature_dimensions)
+                    for c, dim in zip(
+                        parent_coords, self.config.feature_dimensions, strict=True
+                    )
                 ]
                 key = "-".join(str(c) for c in perturbed)
                 pid = cell_to_id.get(key)
@@ -517,11 +699,33 @@ class MapElitesIslandsStrategy:
             candidates: Iterable[Program] = self.programs.values()
         else:
             candidates = (
-                self.programs[pid]
-                for pid in self.islands[island_idx]
-                if pid in self.programs
+                self.programs[pid] for pid in self.islands[island_idx] if pid in self.programs
             )
         ordered = sorted(candidates, key=_fitness, reverse=True)
+        return ordered[:n]
+
+    def _recent_programs(
+        self,
+        *,
+        n: int,
+        island_idx: int | None,
+        exclude_program_id: str | None,
+    ) -> list[Program]:
+        if n <= 0:
+            return []
+        if island_idx is None:
+            candidates: Iterable[Program] = self.programs.values()
+        else:
+            candidates = (
+                self.programs[pid] for pid in self.islands[island_idx] if pid in self.programs
+            )
+        if exclude_program_id is not None:
+            candidates = (p for p in candidates if p.id != exclude_program_id)
+        ordered = sorted(
+            candidates,
+            key=lambda p: (p.iteration_found, p.timestamp),
+            reverse=True,
+        )
         return ordered[:n]
 
     # ------------------------------------------------------------------
@@ -543,7 +747,9 @@ class MapElitesIslandsStrategy:
             island_ids = [pid for pid in self.islands[src] if pid in self.programs]
             if not island_ids:
                 continue
-            sorted_pids = sorted(island_ids, key=lambda pid: _fitness(self.programs[pid]), reverse=True)
+            sorted_pids = sorted(
+                island_ids, key=lambda pid: _fitness(self.programs[pid]), reverse=True
+            )
             n_migrants = max(1, int(len(sorted_pids) * self.config.migration_rate))
             migrants = sorted_pids[:n_migrants]
             for migrant_id in migrants:
@@ -579,33 +785,166 @@ class MapElitesIslandsStrategy:
     # ------------------------------------------------------------------
 
     def _compute_feature_coords(self, program: Program) -> list[int]:
+        if self._feature_scaling_missing():
+            self._refresh_feature_scaling()
         coords: list[int] = []
         for dim in self.config.feature_dimensions:
-            if dim in program.metrics:
-                value = float(program.metrics[dim])
-            elif dim == "complexity":
-                value = float(len(program.source_code))
-            elif dim == "diversity":
-                value = self._compute_diversity(program)
-            elif dim == "score":
-                value = _fitness(program)
-            else:
-                raise ValueError(
-                    f"Feature dimension '{dim}' not in program.metrics and not a built-in. "
-                    f"Available: {list(program.metrics.keys())}; built-ins: complexity, diversity, score."
-                )
-            self._update_feature_stats(dim, value)
-            scaled = self._scale(dim, value)
             n_bins = self.config.bins_for(dim)
-            idx = int(scaled * n_bins)
-            coords.append(max(0, min(n_bins - 1, idx)))
+            value = self._feature_value(program, dim)
+            if self._uses_adaptive_percentile(dim):
+                idx = self._percentile_bin(dim, value, n_bins)
+            else:
+                scaled = self._scale(dim, value)
+                idx = int(scaled * n_bins)
+                idx = max(0, min(n_bins - 1, idx))
+            coords.append(idx)
         return coords
 
-    def _update_feature_stats(self, dim: str, value: float) -> None:
-        s = self._feature_stats.setdefault(dim, {"min": value, "max": value, "n": 0})
-        s["min"] = min(s["min"], value)
-        s["max"] = max(s["max"], value)
-        s["n"] = s.get("n", 0) + 1
+    def _rebucket_feature_maps(self) -> None:
+        """Recompute feature coords and island cell hosts from live programs.
+
+        Adaptive complexity binning can move old programs when a new shape of
+        complexity values appears. Rebuilding keeps every program on the same
+        bin scale and resolves collisions with the existing strict fitness rule:
+        a cell host is replaced only by a program with strictly higher fitness.
+        """
+        self._refresh_feature_scaling()
+        new_maps: list[dict[str, str]] = [{} for _ in range(self.config.num_islands)]
+        active_ids = set(self._active_program_ids())
+        for pid in self.programs:
+            program = self.programs.get(pid)
+            if program is None:
+                continue
+            coords = self._compute_feature_coords(program)
+            feature_coords = {
+                dim: float(coords[i]) for i, dim in enumerate(self.config.feature_dimensions)
+            }
+            program = _replace(program, feature_coords=feature_coords)
+            self.programs[pid] = program
+            if pid not in active_ids:
+                continue
+            cell_key = "-".join(str(c) for c in coords)
+            island_idx = program.island
+            if not 0 <= island_idx < self.config.num_islands:
+                continue
+            incumbent_id = new_maps[island_idx].get(cell_key)
+            if incumbent_id is None or _fitness(program) > _fitness(self.programs[incumbent_id]):
+                new_maps[island_idx][cell_key] = pid
+        self.island_feature_maps = new_maps
+
+    # ------------------------------------------------------------------
+    # internals: complexity + diversity (cosmetic-edit invariant)
+    # ------------------------------------------------------------------
+
+    def _core_source(self, code: str) -> str:
+        """Return `code` with comments + module/class/function docstrings
+        removed via the AST. Cached by raw source so we don't re-parse on
+        every diversity comparison."""
+        cached = self._core_source_cache.get(code)
+        if cached is not None:
+            return cached
+        normalized = _normalized_core_source(code)
+        # Bound the cache so a long run doesn't accumulate every program's
+        # source twice. Old entries are evicted on overflow.
+        if len(self._core_source_cache) > 256:
+            self._core_source_cache.pop(next(iter(self._core_source_cache)))
+        self._core_source_cache[code] = normalized
+        return normalized
+
+    def _compute_complexity(self, code: str) -> float:
+        """Complexity proxy used as the MAP-Elites x-axis. Defaults to AST
+        node count of `code` with comments+docstrings stripped, so cosmetic
+        comment edits don't move programs between cells. Fallback is
+        len(source_code) (legacy behavior, opt-in via complexity_metric)."""
+        if self.config.complexity_metric == "char_count":
+            return float(len(code))
+        return float(_ast_node_count(self._core_source(code)))
+
+    def _compute_diversity(self, program: Program) -> float:
+        """Mean string-distance of `program`'s normalized core source against
+        (a) the seed anchor and (b) every program currently in the archive.
+
+        The archive is the rolling reference: as it changes, so does the
+        diversity yardstick. Failed (score=0) programs are never admitted to
+        the archive, so they cannot pollute it.
+        """
+        target_core = self._core_source(program.source_code)
+        if not target_core:
+            return 0.0
+        ref_cores: list[str] = []
+        if self._diversity_seed_anchor is not None:
+            ref_cores.append(self._diversity_seed_anchor)
+        for pid in self.archive:
+            other = self.programs.get(pid)
+            if other is None or other.id == program.id:
+                continue
+            ref_cores.append(self._core_source(other.source_code))
+        if not ref_cores:
+            return 0.0
+        # Deduplicate identical references (e.g. when archive holds multiple
+        # seed copies on first few iterations) so the metric isn't biased
+        # toward whichever code happens to be replicated.
+        seen: set[str] = set()
+        distances: list[float] = []
+        for ref in ref_cores:
+            if ref in seen:
+                continue
+            seen.add(ref)
+            distances.append(_code_distance(target_core, ref))
+        if not distances:
+            return 0.0
+        return sum(distances) / len(distances)
+
+    def _active_program_ids(self) -> list[str]:
+        active: set[str] = set()
+        for island in self.islands:
+            for pid in island:
+                if pid in self.programs:
+                    active.add(pid)
+        return [pid for pid in self.programs if pid in active]
+
+    def _feature_value(self, program: Program, dim: str) -> float:
+        if dim in program.metrics:
+            return float(program.metrics[dim])
+        if dim == "complexity":
+            return float(program.complexity)
+        if dim == "diversity":
+            return float(program.diversity)
+        if dim == "score":
+            return _fitness(program)
+        raise ValueError(
+            f"Feature dimension '{dim}' not in program.metrics and not a built-in. "
+            f"Available: {list(program.metrics.keys())}; built-ins: complexity, diversity, score."
+        )
+
+    def _uses_adaptive_percentile(self, dim: str) -> bool:
+        return dim == "complexity" and self.config.complexity_binning == "adaptive_percentile"
+
+    def _feature_scaling_missing(self) -> bool:
+        for dim in self.config.feature_dimensions:
+            if self._uses_adaptive_percentile(dim):
+                if dim not in self._feature_percentile_values:
+                    return True
+            elif dim not in self._feature_stats:
+                return True
+        return False
+
+    def _refresh_feature_scaling(self) -> None:
+        active = list(self.programs.values())
+        for dim in self.config.feature_dimensions:
+            values = [self._feature_value(program, dim) for program in active]
+            if not values:
+                continue
+            if self._uses_adaptive_percentile(dim):
+                self._feature_percentile_values[dim] = sorted(values)
+                self._feature_stats.pop(dim, None)
+            else:
+                self._feature_stats[dim] = {
+                    "min": min(values),
+                    "max": max(values),
+                    "n": float(len(values)),
+                }
+                self._feature_percentile_values.pop(dim, None)
 
     def _scale(self, dim: str, value: float) -> float:
         s = self._feature_stats[dim]
@@ -613,26 +952,30 @@ class MapElitesIslandsStrategy:
             return 0.5
         return max(0.0, min(1.0, (value - s["min"]) / (s["max"] - s["min"])))
 
-    def _compute_diversity(self, program: Program) -> float:
-        if len(self._diversity_reference) < 2:
-            return 0.0
-        # Cheap proxy for edit distance: token-set Jaccard over whitespace-split.
-        # Fast, deterministic, and bounded — this matches OpenEvolve's "fast"
-        # mode (it also uses a cheap proxy by default).
-        target_tokens = set(program.source_code.split())
-        if not target_tokens:
-            return 0.0
-        sims: list[float] = []
-        for ref in self._diversity_reference:
-            ref_tokens = set(ref.split())
-            if not ref_tokens:
-                continue
-            inter = len(target_tokens & ref_tokens)
-            union = len(target_tokens | ref_tokens)
-            sims.append(inter / union if union else 0.0)
-        if not sims:
-            return 0.0
-        return 1.0 - (sum(sims) / len(sims))
+    def _percentile_bin(self, dim: str, value: float, n_bins: int) -> int:
+        values = self._feature_percentile_values.get(dim) or []
+        if n_bins <= 1:
+            return 0
+        if not values:
+            return n_bins // 2
+        if math.isclose(values[0], values[-1]):
+            return n_bins // 2
+
+        # Percentile-rank binning keeps equal complexity values in the same
+        # cell while still letting new extremes rebucket older programs.
+        lo = bisect_left(values, value)
+        hi = bisect_right(values, value)
+        if hi == lo:
+            # Program is outside the current live values (possible for direct
+            # helper calls before admission). Place by insertion percentile.
+            rank = float(lo)
+        else:
+            # Average tied ranks so identical AST counts never get split
+            # across bins by insertion order.
+            rank = ((lo + hi - 1) / 2.0)
+        percentile = rank / max(1.0, float(len(values) - 1))
+        idx = int(percentile * n_bins)
+        return max(0, min(n_bins - 1, idx))
 
     # ------------------------------------------------------------------
     # helpers
@@ -656,6 +999,89 @@ def _to_tuple(value: Any) -> Any:
     return value
 
 
+def _is_failure(p: Program) -> bool:
+    """A program is a 'failure' if the evaluator crashed or its objective
+    score is exactly zero (recall floor / penalty hit). These never enter
+    MAP-Elites cells, the archive, or the live population — they only get
+    surfaced to the LLM as 'do not repeat' context."""
+    m = p.metrics or {}
+    if m.get("eval_crashed"):
+        return True
+    score = m.get("combined_score")
+    if score is None:
+        # No score at all = treat as failure (defensive; shouldn't normally happen).
+        return True
+    try:
+        return float(score) <= 0.0
+    except (TypeError, ValueError):
+        return True
+
+
+def _normalized_core_source(code: str) -> str:
+    """Return `code` with comments + module/class/function docstrings
+    stripped via the AST.
+
+    Comments are absent from the AST by construction; docstrings are dropped
+    by removing the leading string-Constant Expr from each Module / ClassDef
+    / FunctionDef / AsyncFunctionDef body. Falls back to the raw source on a
+    SyntaxError (LLMs occasionally emit invalid Python under retries).
+    """
+    if not code:
+        return code
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return code
+    docstring_nodes = ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
+    for node in ast.walk(tree):
+        if isinstance(node, docstring_nodes):
+            body = getattr(node, "body", None) or []
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                replacement = body[1:] or [ast.Pass()]
+                node.body = replacement
+    try:
+        return ast.unparse(tree)
+    except (AttributeError, ValueError):
+        return code
+
+
+def _ast_node_count(code: str) -> int:
+    """Count AST nodes in `code`. Comment lines are not nodes; this is the
+    intended behavior — we want a metric that ignores cosmetic edits.
+
+    Falls back to a line-count proxy on syntax errors so callers don't have
+    to special-case malformed candidates.
+    """
+    if not code:
+        return 1
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return max(1, code.count("\n") + 1)
+    return sum(1 for _ in ast.walk(tree))
+
+
+def _code_distance(a_core: str, b_core: str) -> float:
+    """Normalized string-distance in [0, 1]. 0 = identical, 1 = no overlap.
+
+    Uses `difflib.SequenceMatcher.ratio()` (Ratcliff-Obershelp) for a
+    deterministic, dependency-free proxy. Computed against `_core_source`
+    output, so identical algorithms with different comments score 0.
+    """
+    if not a_core and not b_core:
+        return 0.0
+    if not a_core or not b_core:
+        return 1.0
+    if a_core == b_core:
+        return 0.0
+    return 1.0 - SequenceMatcher(None, a_core, b_core, autojunk=False).ratio()
+
+
 def _fitness(p: Program) -> float:
     """Fitness ignoring MAP-Elites feature dimensions; defaults to combined_score.
 
@@ -666,13 +1092,14 @@ def _fitness(p: Program) -> float:
     m = p.metrics
     if "combined_score" in m:
         return float(m["combined_score"])
-    nums = [float(v) for v in m.values() if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    nums = [float(v) for v in m.values() if isinstance(v, int | float) and not isinstance(v, bool)]
     return sum(nums) / len(nums) if nums else 0.0
 
 
 def _replace(p: Program, **changes) -> Program:
     """Like dataclasses.replace, but works for our frozen Program."""
     from dataclasses import replace as _r
+
     return _r(p, **changes)
 
 

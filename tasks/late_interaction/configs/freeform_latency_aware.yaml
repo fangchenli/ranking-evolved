@@ -1,0 +1,294 @@
+# Late-interaction freeform evolution — latency-aware.
+#
+# Drives RankEvolve to evolve `tasks/late_interaction/seeds/freeform.py`
+# (which starts bit-identical to exact MaxSim) toward a faster algorithm
+# that holds recall. The latency baseline is exact MaxSim itself — the seed
+# IS the bar to beat. FastPLAID/ColBERTv2/WARP/etc. are listed as prior
+# art in the system prompt; they do NOT enter the objective.
+#
+# The evaluator runs all queries (`EVAL_SAMPLE_QUERIES=1000000000` clamps to
+# the full query count), with 10 warmup queries and 1 timed repeat per query
+# during evolution. Dataset suite (revised 2026-05-04) chosen to span ~8x
+# corpus-size range so naive constant `K * top_k` budgets visibly fail the
+# geometric mean:
+#   beir_fiqa                    (~58K docs, financial Q&A — balanced quality)
+#   bright_stackoverflow         (107K docs, programming Q&A — sparse qrels)
+#   bright_theoremqa_questions   (188K docs, math problems — biggest latency target)
+#
+# Run / review workflow:
+#   export OPENAI_API_KEY=...
+#   # Smoke: create a run and stop after 2 total iterations.
+# uv run ranking-evolved run \
+#   --config tasks/late_interaction/configs/freeform_latency_aware.yaml \
+#   --replay --max-iterations 2
+#
+#   # Resume that same run to 100 total iterations.
+# uv run ranking-evolved run \
+#   --config tasks/late_interaction/configs/freeform_latency_aware.yaml \
+#   --resume <run_dir> --max-iterations 100
+
+# uv run ranking-evolved run \
+#   --config tasks/late_interaction/configs/freeform_latency_aware.yaml \
+#   --resume output/late_interaction_freeform_latency_aware/20260503_124613_6c1309 --max-iterations 100
+
+
+#   # Inspect the exact prompt, parent, inspirations, db state, diff, and eval.
+# uv run ranking-evolved inspect-step \
+#   --run <run_dir> --step 30 \
+#   summary prompt parent inspirations population-before population-after diff eval
+#
+#   # Render all captured replay snapshots into one HTML report.
+#   uv run ranking-evolved replay-dashboard \
+#     --run <run_dir> --out <run_dir>/replay_dashboard.html
+#
+# Re-evaluate final winners separately with 3 timed repeats for a lower-noise
+# validation number; this evolution config uses 1 repeat to keep search moving.
+#
+# If prompt context ever grows past gpt-5.2's 400K window, switch to gpt-5.4:
+#   --set proposer.models.0.name=gpt-5.4
+
+task:
+  seed: tasks/late_interaction/seeds/freeform.py
+  evaluator: tasks/late_interaction/evaluator.py
+
+evolution:
+  max_iterations: 100        # use --max-iterations 2 for the initial smoke run
+  random_seed: 42
+  capture_replay: true       # writes replay/step_NNNN.json per iteration
+  capture_replay_every: 1    # every step; enables step-by-step prompt/db review
+
+search:
+  algorithm: map_elites_islands
+  population_size: 30
+  # archive_size = num_islands * 4. The single shared archive is filtered
+  # to current-island members during exploitation; with too few entries the
+  # filter falls back to the global archive and breaks island isolation.
+  # See _sample_exploitation_parent in map_elites_islands.py.
+  archive_size: 12
+  num_islands: 3
+  migration_interval: 8
+  migration_rate: 0.15
+  exploration_ratio: 0.30
+  exploitation_ratio: 0.60
+  feature_dimensions: [complexity, diversity]
+  feature_bins: 4
+  # Strategy returns up to this many inspirations; the prompt builder then
+  # dedupes against recent + top + parent and shows up to
+  # `prompt.num_diverse_programs` of them. Headroom of (recent + top + 1)
+  # ensures the diverse section is fully populated even when island_best
+  # and the top elite get consumed by the recent/top sections.
+  num_inspirations: 8
+  # AST-based; comments + docstrings are stripped so cosmetic edits don't
+  # move programs between cells. Set to "char_count" for legacy len() proxy.
+  complexity_metric: ast_nodes
+  # Rebucket live programs by complexity percentile as new extremes/clusters
+  # emerge, instead of pinning bins to the seed-vs-current min/max range.
+  complexity_binning: adaptive_percentile
+  # Recent score=0 / crashed candidates retained only for prompt feedback.
+  failure_buffer_size: 12
+
+proposer:
+  kind: openai_responses
+  models:
+    - {name: "gpt-5.2", weight: 1.0}
+  api_base: "https://api.openai.com/v1"
+  api_key: "${OPENAI_API_KEY}"
+  max_tokens: 32768
+  reasoning_effort: medium
+  timeout: 300
+  retries: 3
+  candidate_retries: 3
+
+prompt:
+  diff_based: true
+  num_recent_programs: 1
+  num_top_programs: 1
+  # Context programs render as (compact metrics + unified diff vs parent),
+  # so 5 diverse picks now cost a fraction of what 2 full-source programs
+  # cost under the legacy renderer. The strategy must return at least
+  # (num_recent + num_top + num_diverse) = 7 inspirations for dedup to fill
+  # this slot reliably — see search.num_inspirations above.
+  num_diverse_programs: 5
+  num_failed_attempts: 3
+  # 0 = render the full unified diff for each context/failed program.
+  max_diff_lines: 0
+  summary_metric_keys:
+    - combined_score
+    - objective_recall_component
+    - objective_ndcg_component
+    - objective_latency_component
+  summary_per_dataset_suffixes:
+    - _recall_at_1000
+    - _ndcg_at_10
+    - _query_latency_median_ms
+  include_artifacts: true
+  system_message: |
+    You are inventing a late-interaction retrieval algorithm over fixed
+    contextualized token embeddings. The seed is exact ColBERT MaxSim:
+    score(q, d) = sum_i max_j q_i dot d_j. You may not retrain or re-encode
+    embeddings; your only lever is the retrieval algorithm.
+
+    This is not a reproduction task. Published systems such as ColBERTv2,
+    PLAID/FastPLAID, XTR, WARP, ScaNN, FAISS IVF/PQ/OPQ, and related ANN
+    methods are prior art and sources of design pressure, not templates to
+    copy. Seek a new, elegant principle that changes candidate generation,
+    scoring, indexing, pruning, compression, or reranking in a fundamental
+    way.
+
+    Objective:
+
+      combined_score = 0.40 * agg_recall@1000
+                     + 0.30 * agg_ndcg@10
+                     + 0.30 * agg_latency_score
+
+      latency_ratio_d  = candidate_median_query_latency_ms_d
+                       / exact_maxsim_median_query_latency_ms_d   (per dataset)
+      latency_score_d  = 1 / (1 + latency_ratio_d)
+      agg_<metric>     = geometric mean over datasets
+                         (a near-zero on ANY dataset drops the aggregate near zero)
+      if a dataset's ratio > 8x: that dataset's latency_score = 0
+      if any dataset's recall@1000 < 0.10: combined_score = 0 (candidate rejected)
+
+    The latency baseline is exact MaxSim. At parity, latency_score is 0.5.
+    To improve the score, be faster without sacrificing recall, or find a
+    scoring/indexing rule that improves quality on the fixed embeddings.
+    Geometric mean and the recall floor mean a method that flops on one
+    corpus is uncompetitive regardless of how good it looks on the others —
+    your budget rules must scale with corpus size.
+
+    Evaluation datasets (chosen to span ~8x corpus-size range):
+      beir_fiqa                    (~58K docs, financial Q&A, balanced quality)
+      bright_stackoverflow         (107K docs, programming Q&A, sparse qrels)
+      bright_theoremqa_questions   (188K docs, math problems, biggest latency target)
+
+    Design rules:
+    - Prefer one coherent algorithmic idea over stacked local tweaks.
+    - Constants must be interpretable budgets, probabilities, dimensions,
+      bin counts, or thresholds with a reason. Do not hide magic numbers in
+      the code.
+    - No dataset-name branches, quality-floor gates, ablation switches,
+      feature flags, or external data/services.
+    - No ad-hoc heuristic add-ons unless they follow from the method and are
+      justified by the metrics.
+    - If local edits stall, restructure the whole pipeline: redesign
+      `build()`, replace `_maxsim_score`, add index artifacts, change
+      candidate generation, or rerank a shortlist. Preserve only the public
+      `LateInteractionRetriever.build(docs)` and
+      `search(queries, top_k) -> dict[query_id, list[(doc_id, score)]]`
+      surface.
+
+    You may freely:
+
+    - precompute centroids, posting lists, residuals, summary vectors,
+      upper bounds, compressed representations, or other deterministic index
+      structures in `build()`
+    - introduce candidate generation, query-token weighting, document-token
+      pruning, early exit, adaptive budgets, hierarchical scoring,
+      shortlist reranking, or vectorized NumPy/einsum/sparse operations
+    - eliminate the brute-force Python loop when a cleaner batched or indexed
+      design exists
+
+    You may NOT:
+      - change the file's public surface — `LateInteractionRetriever.build`
+        / `search` signatures and the returned dict shape are contractual
+      - touch any file outside the seed
+      - call external services or load extra data
+      - re-encode the embeddings — they are fixed inputs from
+        `tasks.late_interaction.embedding_cache.TokenEmbeddingStore`
+      - use feature flags, dataset-name lookups, or ablation gates
+
+    Editing format:
+
+    Use SEARCH/REPLACE diffs only. SEARCH must match the current code exactly.
+    REPLACE contains the edited code. Prefer one or a few coherent edits; if
+    a larger rewrite is needed, do it cleanly and keep the public surface
+    intact.
+
+    Use feedback deliberately:
+
+    The per-dataset metrics show you `recall@{10,100,1000}`, `ndcg@10`,
+    `p50/p95/mean query latency`, `build_time_ms`. The latency_ratio per
+    dataset tells you how far you are from exact MaxSim's speed on that
+    corpus.
+
+    If recall improves but latency collapses, the change is too expensive;
+    look for a precomputed or lazy form of the same idea. If latency
+    improves but recall collapses, the approximation is too aggressive;
+    widen the candidate pool or refine the score. The best candidates push
+    the frontier, not just one axis.
+
+evaluation:
+  timeout: 1800
+  isolation: inline
+  cascade: false
+  # Per-run env passed through to the evaluator on every candidate eval.
+  # The user runs on a CPU laptop; full eval (no EVAL_SAMPLE_QUERIES cap so
+  # the worker takes all queries per dataset). 10 warmup queries are run once
+  # untimed before the timed pass. Evolution uses 1 timed repeat per measured
+  # query for throughput; validate final winners separately with 3 repeats.
+  # EVAL_PROGRESS prints per-dataset progress during long candidate evals.
+  env:
+    EVAL_DEVICE: cpu
+    EVAL_DATASETS: beir_fiqa,bright_stackoverflow,bright_theoremqa_questions
+    EVAL_SAMPLE_QUERIES: "1000000000"
+    EVAL_WARMUP_QUERIES: "10"
+    EVAL_TIMED_REPEATS: "1"
+    EVAL_PROGRESS: "1"
+
+objective:
+  name: recall1000_ndcg10_latency
+  recall_k: 1000
+  ndcg_k: 10
+  weights:
+    # Recall is primary — half the score. nDCG@10 and latency split the rest.
+    # Rationale: a useful retriever must recall enough relevant docs first;
+    # ranking quality and speed are secondary. (Previously 0.40/0.20/0.40
+    # over-rewarded latency wins that came at the cost of recall on the
+    # largest corpus.)
+    recall: 0.40
+    ndcg: 0.30
+    latency: 0.30
+  # Geometric mean across datasets: a near-zero on any one dataset drives
+  # the aggregate near zero. With three corpora of very different sizes,
+  # arithmetic mean lets a candidate "win" by sacrificing the largest one.
+  aggregation:
+    mode: geometric
+    eps: 1.0e-3
+  # Recall floor: any dataset below this fraction zeroes the entire
+  # candidate. Use this to refuse solutions that collapse on one corpus —
+  # they will lose every cell-replacement contest in MAP-Elites and stop
+  # spawning offspring.
+  min_recall: 0.10
+  latency:
+    enabled: true
+    baseline_source: external
+    # The latency baseline is exact MaxSim — the upper-bound-quality reference.
+    # FastPLAID/ColBERTv2/WARP/etc. are prior art (mentioned in the prompt);
+    # they do NOT enter the objective.
+    baseline_path: tasks/late_interaction/baselines/exact_maxsim.${EVAL_DEVICE}.json
+    relative_to: external
+    warmup_queries: 10
+    timed_repeats: 1
+    aggregation: median_per_query
+    ratio_transform: inverse_one_plus_ratio
+    hard_slowdown_threshold: 8.0   # 8x slower than exact MaxSim is catastrophic
+    penalty_mode: zero_latency_score
+
+trace:
+  enabled: true
+  include_prompts: true
+
+logging:
+  level: INFO
+  debug_log: false
+  run_log_max_mb: 10
+  run_log_backups: 5
+  proposer_log_max_mb: 50
+  proposer_log_backups: 3
+  proposer_log_gzip: true
+  evaluator_log_max_mb: 25
+  evaluator_log_backups: 3
+
+run_store:
+  backend: sqlite
+  vacuum_on_close: true

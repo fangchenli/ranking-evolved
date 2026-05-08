@@ -7,6 +7,7 @@ Subcommands:
 Future phases will add: resume, eval, replay-capture-reference, replay-dashboard,
 list-algorithms, gc, inspect.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -49,39 +50,86 @@ def main(argv: list[str] | None = None) -> int:
         "replay-capture-reference",
         help="Convert an OpenEvolve run dir into reference replay step files.",
     )
-    p_capref.add_argument("--openevolve-output", required=True, type=Path,
-                          help="Path to an OE run dir (containing evolution_trace.jsonl).")
-    p_capref.add_argument("--out", required=True, type=Path,
-                          help="Destination dir for step_NNNN.json files (e.g. <run>/replay/reference).")
-    p_capref.add_argument("--max-steps", type=int, default=None,
-                          help="Convert at most N steps (default: all).")
+    p_capref.add_argument(
+        "--openevolve-output",
+        required=True,
+        type=Path,
+        help="Path to an OE run dir (containing evolution_trace.jsonl).",
+    )
+    p_capref.add_argument(
+        "--out",
+        required=True,
+        type=Path,
+        help="Destination dir for step_NNNN.json files (e.g. <run>/replay/reference).",
+    )
+    p_capref.add_argument(
+        "--max-steps", type=int, default=None, help="Convert at most N steps (default: all)."
+    )
 
     p_dash = sub.add_parser(
         "replay-dashboard",
         help="Render <run>/replay/*.json (and optionally reference/) into HTML.",
     )
     p_dash.add_argument("--run", required=True, type=Path, help="Path to a run directory.")
-    p_dash.add_argument("--out", type=Path, default=None,
-                        help="Output HTML path (default: <run>/replay_dashboard.html).")
+    p_dash.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Output HTML path (default: <run>/replay_dashboard.html).",
+    )
 
     p_run = sub.add_parser("run", help="Run an evolution loop against a config YAML.")
     p_run.add_argument("--config", required=True, type=Path, help="Path to config YAML.")
     p_run.add_argument(
-        "--set", dest="overrides", action="append", default=[],
+        "--set",
+        dest="overrides",
+        action="append",
+        default=[],
         help="Override a config value: --set search.population_size=100",
     )
     p_run.add_argument(
-        "--replay", action="store_true",
+        "--replay",
+        action="store_true",
         help="Capture per-iteration replay snapshots (overrides config).",
     )
     p_run.add_argument(
-        "--max-iterations", type=int, default=None,
+        "--max-iterations",
+        type=int,
+        default=None,
         help="Override evolution.max_iterations from the CLI.",
     )
     p_run.add_argument(
-        "--resume", type=Path, default=None,
+        "--resume",
+        type=Path,
+        default=None,
         help="Resume an existing run directory; --max-iterations is the total target iteration.",
     )
+
+    p_inspect = sub.add_parser(
+        "inspect-step",
+        help="Print scoped views (prompt, parent, inspirations, population, diff, etc.) "
+        "of one iteration from a run dir.",
+    )
+    p_inspect.add_argument(
+        "--run", dest="run_dir", required=True, type=Path, help="Path to a run directory."
+    )
+    p_inspect.add_argument(
+        "--step", required=True, type=int, help="Iteration number to inspect (1-indexed)."
+    )
+    p_inspect.add_argument(
+        "sections",
+        nargs="*",
+        help="Sections to print. Default: summary. "
+        "Choose from: all, summary, prompt, parent, inspirations, "
+        "population, population-before, population-after, diff, "
+        "llm-response, child-code, eval.",
+    )
+
+    p_refresh_best = sub.add_parser(
+        "refresh-best",
+        help="Regenerate <run>/best from run.db, including best-step provenance files.",
+    )
+    p_refresh_best.add_argument("--run", required=True, type=Path, help="Path to a run directory.")
 
     p_test_dash = sub.add_parser(
         "test-dashboard",
@@ -110,15 +158,55 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.cmd == "replay-capture-reference":
         return _cmd_replay_capture(
-            openevolve_output=args.openevolve_output, out=args.out, max_steps=args.max_steps,
+            openevolve_output=args.openevolve_output,
+            out=args.out,
+            max_steps=args.max_steps,
         )
     if args.cmd == "replay-dashboard":
         return _cmd_replay_dashboard(run=args.run, out=args.out)
+    if args.cmd == "inspect-step":
+        from ranking_evolved.cli_inspect import cmd_inspect_step
+
+        return cmd_inspect_step(
+            run_dir=args.run_dir,
+            step=args.step,
+            sections=args.sections,
+        )
+    if args.cmd == "refresh-best":
+        return _cmd_refresh_best(run=args.run)
     if args.cmd == "test-dashboard":
         return _cmd_test_dashboard(args.pytest_args, include_legacy=args.include_legacy)
 
     parser.print_help()
     return 2
+
+
+def _cmd_refresh_best(*, run: Path) -> int:
+    from ranking_evolved.core.controller import export_best_program
+    from ranking_evolved.core.run_store import RunStore
+
+    run_dir = run.resolve()
+    db_path = run_dir / "run.db"
+    if not db_path.exists():
+        print(f"[ranking-evolved] run dir has no run.db: {run_dir}", file=sys.stderr)
+        return 2
+
+    store = RunStore(db_path)
+    try:
+        programs = list(store.iter_programs())
+    finally:
+        store.close()
+
+    if not programs:
+        print(f"[ranking-evolved] no programs found in {db_path}", file=sys.stderr)
+        return 2
+
+    best = max(programs, key=lambda p: float(p.metrics.get("combined_score", 0.0)))
+    export_best_program(run_dir, best)
+    print(f"[ranking-evolved] refreshed best: {best.id}")
+    print(f"[ranking-evolved] created at step: {best.iteration_found}")
+    print(f"[ranking-evolved] best dir: {run_dir / 'best'}")
+    return 0
 
 
 def _cmd_run(
@@ -133,9 +221,13 @@ def _cmd_run(
     from ranking_evolved.core.controller import Controller
     from ranking_evolved.core.logs import make_run_logger
     from ranking_evolved.core.manifest import (
-        build_manifest, make_run_id, update_manifest, write_manifest,
+        build_manifest,
+        make_run_id,
+        update_manifest,
+        write_manifest,
     )
     from ranking_evolved.evaluation.runner import EvaluatorRunner
+
     # Importing the proposers package side-effect-registers every proposer.
     import ranking_evolved.proposers  # noqa: F401
     from ranking_evolved.proposers.base import REGISTRY as PROPOSERS
@@ -161,10 +253,15 @@ def _cmd_run(
         run_dir = REPO_ROOT / "output" / task_label / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        # Snapshot the resolved config + manifest.
+        # Snapshot the resolved config + manifest. Secrets (proposer.api_key
+        # and any field whose name ends in _key/_token/_secret) are redacted
+        # before writing — they live in the env / .env file, not on disk.
         (run_dir / "config.resolved.yaml").write_text(_dump_yaml_safely(config))
         manifest = build_manifest(
-            run_id=run_id, task=task_label, config_path=config_path, repo_root=REPO_ROOT,
+            run_id=run_id,
+            task=task_label,
+            config_path=config_path,
+            repo_root=REPO_ROOT,
         )
         write_manifest(run_dir, manifest)
 
@@ -178,11 +275,20 @@ def _cmd_run(
         return 2
     proposer = _build_proposer(proposer_kind, config.proposer)
 
+    # Merge env from two sources:
+    #   - _objective_env(...): EVAL_RECALL_K, EVAL_NDCG_K, EVAL_WARMUP_QUERIES,
+    #     EVAL_OBJECTIVE_NAME — derived automatically from objective config.
+    #   - config.evaluation.env: user-supplied per-run knobs (EVAL_DEVICE,
+    #     EVAL_DATASETS, EVAL_SAMPLE_QUERIES, EVAL_TIMED_REPEATS, etc.).
+    # User block takes precedence on key collision so the YAML can override
+    # an objective-derived default explicitly when needed.
+    user_env = {str(k): str(v) for k, v in (config.evaluation.env or {}).items() if v is not None}
+    extra_env = {**_objective_env(config.objective), **user_env}
     runner = EvaluatorRunner(
         config.task.evaluator,
         timeout_s=config.evaluation.timeout,
         isolation=config.evaluation.isolation,
-        extra_env=_objective_env(config.objective),
+        extra_env=extra_env,
     )
 
     logger = make_run_logger(
@@ -195,11 +301,18 @@ def _cmd_run(
     _ensure_console_logging(logger, level=config.logging.level)
 
     controller = Controller(
-        config=config, run_dir=run_dir, proposer=proposer, runner=runner,
-        logger=logger, config_path=config_path, run_id=run_id,
+        config=config,
+        run_dir=run_dir,
+        proposer=proposer,
+        runner=runner,
+        logger=logger,
+        config_path=config_path,
+        run_id=run_id,
     )
     try:
-        best = asyncio.run(controller.run(seed_path=Path(config.task.seed), resume=resume is not None))
+        best = asyncio.run(
+            controller.run(seed_path=Path(config.task.seed), resume=resume is not None)
+        )
     finally:
         controller.close()
     update_manifest(run_dir, ended_at=_iso_now(), exit_status="ok")
@@ -225,7 +338,9 @@ def _cmd_run(
 
 def _ensure_console_logging(logger: logging.Logger, *, level: str) -> None:
     """Attach one concise stdout handler for live long-run progress."""
-    has_console = any(getattr(handler, "_ranking_evolved_console", False) for handler in logger.handlers)
+    has_console = any(
+        getattr(handler, "_ranking_evolved_console", False) for handler in logger.handlers
+    )
     if has_console:
         return
     handler = logging.StreamHandler(sys.stdout)
@@ -258,7 +373,10 @@ def _objective_env(objective) -> dict[str, str]:
 
 def _cmd_replay_capture(*, openevolve_output: Path, out: Path, max_steps: int | None) -> int:
     from ranking_evolved.core.replay_capture import capture_reference
-    written = capture_reference(openevolve_output=openevolve_output, out_dir=out, max_steps=max_steps)
+
+    written = capture_reference(
+        openevolve_output=openevolve_output, out_dir=out, max_steps=max_steps
+    )
     print(f"[ranking-evolved] wrote {len(written)} reference step file(s) to {out}")
     if written:
         print(f"[ranking-evolved]   first: {written[0].name}")
@@ -268,6 +386,7 @@ def _cmd_replay_capture(*, openevolve_output: Path, out: Path, max_steps: int | 
 
 def _cmd_replay_dashboard(*, run: Path, out: Path | None) -> int:
     from ranking_evolved.core.replay_dashboard import render_dashboard
+
     out_path = out or (run / "replay_dashboard.html")
     rendered = render_dashboard(run, out_path=out_path)
     print(f"[ranking-evolved] dashboard: {rendered}")
@@ -285,11 +404,7 @@ def _derive_task_label(config_path: Path) -> str:
     """
     p = Path(config_path).resolve()
     parts = p.parts
-    if (
-        len(parts) >= 4
-        and p.parent.name == "configs"
-        and p.parent.parent.parent.name == "tasks"
-    ):
+    if len(parts) >= 4 and p.parent.name == "configs" and p.parent.parent.parent.name == "tasks":
         return f"{p.parent.parent.name}_{p.stem}"
     return p.stem or "run"
 
@@ -343,8 +458,7 @@ def _build_proposer(kind: str, cfg) -> object:
         # only support same-kind ensembles via the YAML schema. CLI users who
         # need richer ensembles construct in code.
         raise NotImplementedError(
-            "ensemble proposer requires programmatic construction; not yet "
-            "wired through YAML."
+            "ensemble proposer requires programmatic construction; not yet wired through YAML."
         )
     if kind == "scripted":
         if cfg.proposals_jsonl is None:
@@ -357,9 +471,28 @@ def _build_proposer(kind: str, cfg) -> object:
     raise NotImplementedError(f"Proposer {kind!r} not yet wired in `_build_proposer`.")
 
 
+_SECRET_KEY_SUFFIXES = ("_key", "_token", "_secret", "_password")
+_SECRET_KEY_NAMES = {"api_key", "auth_token", "password", "secret", "openai_api_key"}
+_REDACTED = "***REDACTED***"
+
+
+def _is_secret_key(name: str) -> bool:
+    """Return True for config keys that should never be written to disk."""
+    n = name.lower()
+    if n in _SECRET_KEY_NAMES:
+        return True
+    return any(n.endswith(suffix) for suffix in _SECRET_KEY_SUFFIXES)
+
+
 def _dump_yaml_safely(obj) -> str:
-    """Serialize a Config dataclass tree to YAML for `config.resolved.yaml`."""
-    import dataclasses
+    """Serialize a Config dataclass tree to YAML for `config.resolved.yaml`.
+
+    Secrets are redacted: any field whose name ends in `_key`, `_token`,
+    `_secret`, `_password`, or matches a known secret name (`api_key`,
+    `password`, etc.) is replaced with `"***REDACTED***"` regardless of value.
+    Secrets must come from the environment / .env file, never from a YAML
+    file checked into a run directory.
+    """
     try:
         import yaml  # noqa: PLC0415
     except ImportError:
@@ -369,10 +502,17 @@ def _dump_yaml_safely(obj) -> str:
 
 def _to_dict(obj):  # type: ignore[no-untyped-def]
     import dataclasses
+
     if dataclasses.is_dataclass(obj):
-        return {k: _to_dict(v) for k, v in dataclasses.asdict(obj).items()}
+        return {
+            k: (_REDACTED if _is_secret_key(k) and v not in (None, "") else _to_dict(v))
+            for k, v in dataclasses.asdict(obj).items()
+        }
     if isinstance(obj, dict):
-        return {k: _to_dict(v) for k, v in obj.items()}
+        return {
+            k: (_REDACTED if _is_secret_key(str(k)) and v not in (None, "") else _to_dict(v))
+            for k, v in obj.items()
+        }
     if isinstance(obj, (list, tuple)):
         return [_to_dict(v) for v in obj]
     return obj
@@ -380,6 +520,7 @@ def _to_dict(obj):  # type: ignore[no-untyped-def]
 
 def _iso_now() -> str:
     import datetime as _dt
+
     return _dt.datetime.now(_dt.timezone.utc).isoformat()
 
 
@@ -395,9 +536,7 @@ def _cmd_test_dashboard(extra_pytest_args: list[str], *, include_legacy: bool) -
 
     if not targets:
         # Nothing to run yet (Phase 0 state). Write a valid empty dashboard directly.
-        json_path, html_path = write_dashboard(
-            repo_root=REPO_ROOT, records=[], exit_status=0
-        )
+        json_path, html_path = write_dashboard(repo_root=REPO_ROOT, records=[], exit_status=0)
         print(
             "[ranking-evolved] no dashboard-instrumented tests yet "
             "(skipping pytest); wrote empty dashboard."
