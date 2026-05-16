@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -35,12 +35,18 @@ class CacheMetadata:
     total_query_tokens: int
     max_doc_tokens: int
     max_query_tokens: int
+    qrels_modes: list[str] = field(default_factory=lambda: ["gold"])
+    has_excluded_ids: bool = False
+    has_aspect_annotations: bool = False
     cache_version: int = CACHE_VERSION
 
     @classmethod
     def from_json(cls, path: Path) -> CacheMetadata:
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
+        data.setdefault("qrels_modes", ["gold"])
+        data.setdefault("has_excluded_ids", False)
+        data.setdefault("has_aspect_annotations", False)
         return cls(**data)
 
     def to_json(self, path: Path) -> None:
@@ -128,6 +134,9 @@ class LateInteractionCache:
     docs: TokenEmbeddingStore
     queries: TokenEmbeddingStore
     qrels: dict[str, dict[str, int]]
+    qrels_mode: str = "gold"
+    excluded_ids: dict[str, list[str]] = field(default_factory=dict)
+    aspect_annotations: dict[str, Any] | None = None
 
 
 def write_embedding_cache(
@@ -139,6 +148,9 @@ def write_embedding_cache(
     query_ids: list[str],
     qrels: dict[str, dict[str, int]],
     metadata: CacheMetadata,
+    qrels_by_mode: dict[str, dict[str, dict[str, int]]] | None = None,
+    excluded_ids: dict[str, list[str]] | None = None,
+    aspect_annotations: dict[str, Any] | None = None,
     overwrite: bool = False,
 ) -> None:
     """Write a complete late-interaction cache.
@@ -174,11 +186,45 @@ def write_embedding_cache(
         metadata.dtype,
         metadata.embedding_dim,
     )
-    _write_qrels(path / "qrels.jsonl", qrels)
+    qrels_modes = {"gold": qrels}
+    if qrels_by_mode:
+        qrels_modes.update(qrels_by_mode)
+    _write_qrels(path / "qrels.jsonl", qrels_modes.get("gold", qrels))
+    for mode, mode_qrels in sorted(qrels_modes.items()):
+        if mode == "gold":
+            continue
+        _write_qrels(path / f"qrels_{mode}.jsonl", mode_qrels)
+    if excluded_ids:
+        _write_excluded_ids(path / "excluded_ids.json", excluded_ids)
+    if aspect_annotations:
+        _write_json(path / "aspect_annotations.json", aspect_annotations)
+
+    metadata = CacheMetadata(
+        dataset_name=metadata.dataset_name,
+        benchmark=metadata.benchmark,
+        model_name=metadata.model_name,
+        embedding_dim=metadata.embedding_dim,
+        dtype=metadata.dtype,
+        num_docs=metadata.num_docs,
+        num_queries=metadata.num_queries,
+        total_doc_tokens=metadata.total_doc_tokens,
+        total_query_tokens=metadata.total_query_tokens,
+        max_doc_tokens=metadata.max_doc_tokens,
+        max_query_tokens=metadata.max_query_tokens,
+        qrels_modes=sorted(qrels_modes),
+        has_excluded_ids=bool(excluded_ids),
+        has_aspect_annotations=bool(aspect_annotations),
+        cache_version=metadata.cache_version,
+    )
     metadata.to_json(path / "metadata.json")
 
 
-def load_embedding_cache(cache_dir: str | Path, mmap_mode: str = "r") -> LateInteractionCache:
+def load_embedding_cache(
+    cache_dir: str | Path,
+    mmap_mode: str = "r",
+    *,
+    qrels_mode: str = "gold",
+) -> LateInteractionCache:
     """Load a complete late-interaction cache."""
 
     path = Path(cache_dir)
@@ -199,14 +245,29 @@ def load_embedding_cache(cache_dir: str | Path, mmap_mode: str = "r") -> LateInt
         expected_total_tokens=metadata.total_query_tokens,
         mmap_mode=mmap_mode,
     )
-    qrels = _read_qrels(path / "qrels.jsonl")
+    qrels_path = path / "qrels.jsonl"
+    if qrels_mode != "gold":
+        candidate = path / f"qrels_{qrels_mode}.jsonl"
+        if candidate.exists():
+            qrels_path = candidate
+        else:
+            raise FileNotFoundError(f"qrels mode {qrels_mode!r} not available in {path}")
+    qrels = _read_qrels(qrels_path)
 
     if len(docs) != metadata.num_docs:
         raise ValueError("metadata num_docs does not match loaded document store")
     if len(queries) != metadata.num_queries:
         raise ValueError("metadata num_queries does not match loaded query store")
 
-    return LateInteractionCache(metadata=metadata, docs=docs, queries=queries, qrels=qrels)
+    return LateInteractionCache(
+        metadata=metadata,
+        docs=docs,
+        queries=queries,
+        qrels=qrels,
+        qrels_mode=qrels_mode,
+        excluded_ids=_read_excluded_ids(path / "excluded_ids.json"),
+        aspect_annotations=_read_json(path / "aspect_annotations.json"),
+    )
 
 
 def build_metadata(
@@ -217,6 +278,9 @@ def build_metadata(
     doc_embeddings: Iterable[NDArray[Any]],
     query_embeddings: Iterable[NDArray[Any]],
     dtype: str,
+    qrels_modes: list[str] | None = None,
+    has_excluded_ids: bool = False,
+    has_aspect_annotations: bool = False,
 ) -> CacheMetadata:
     """Build metadata from embedding arrays."""
 
@@ -238,6 +302,9 @@ def build_metadata(
         total_query_tokens=int(sum(query_lengths)),
         max_doc_tokens=max(doc_lengths, default=0),
         max_query_tokens=max(query_lengths, default=0),
+        qrels_modes=qrels_modes or ["gold"],
+        has_excluded_ids=has_excluded_ids,
+        has_aspect_annotations=has_aspect_annotations,
     )
 
 
@@ -394,3 +461,34 @@ def _read_qrels(path: Path) -> dict[str, dict[str, int]]:
             row = json.loads(line)
             qrels.setdefault(str(row["query_id"]), {})[str(row["doc_id"])] = int(row["relevance"])
     return qrels
+
+
+def _write_excluded_ids(path: Path, excluded_ids: dict[str, list[str]]) -> None:
+    normalized = {
+        str(query_id): [str(doc_id) for doc_id in doc_ids]
+        for query_id, doc_ids in excluded_ids.items()
+    }
+    _write_json(path, normalized)
+
+
+def _read_excluded_ids(path: Path) -> dict[str, list[str]]:
+    if not path.exists():
+        return {}
+    data = _read_json(path)
+    if not isinstance(data, dict):
+        return {}
+    return {
+        str(query_id): [str(doc_id) for doc_id in doc_ids]
+        for query_id, doc_ids in data.items()
+        if isinstance(doc_ids, list)
+    }
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _read_json(path: Path) -> Any | None:
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))

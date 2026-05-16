@@ -1107,6 +1107,10 @@ def _merge_outcome_into_metrics(
     """Replace `combined_score` and add objective components / per-dataset latency keys."""
     metrics["combined_score"] = float(outcome.combined_score)
     metrics["objective_name"] = objective.name
+    metrics["objective_recall_metric_key"] = (
+        objective.recall_metric_key or f"recall@{objective.recall_k}"
+    )
+    metrics["objective_ndcg_metric_key"] = objective.ndcg_metric_key or f"ndcg@{objective.ndcg_k}"
     metrics["objective_recall_component"] = float(outcome.objective_recall_component)
     metrics["objective_ndcg_component"] = float(outcome.objective_ndcg_component)
     metrics["objective_latency_component"] = float(outcome.objective_latency_component)

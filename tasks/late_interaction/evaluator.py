@@ -24,12 +24,19 @@ Both flows respect:
   EVAL_SAMPLE_QUERIES      default 50
   EVAL_WARMUP_QUERIES      default 10
   EVAL_TIMED_REPEATS       default 3 (per-query, take median)
+  EVAL_QRELS_MODE          gold | pooled (default gold)
+  EVAL_AUTO_CACHE          default true; set 0/false to skip missing caches
+  EVAL_CACHE_MODEL         default lightonai/LateOn
+  EVAL_CACHE_DTYPE         default float16
+  EVAL_CACHE_BATCH_SIZE    default 16
   EVAL_PROGRESS            1/true/yes/on to print dataset/query progress
   EVAL_RECALL_K            default 1000
   EVAL_NDCG_K              default 10
 """
 
 from __future__ import annotations
+
+# ruff: noqa: I001
 
 # Import _runtime first so BLAS pinning takes effect before numpy/torch import.
 from tasks.late_interaction import _runtime  # noqa: F401
@@ -39,9 +46,9 @@ import json
 import os
 import sys
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 
@@ -51,6 +58,7 @@ DEFAULT_CACHE_ROOT = "cache/late_interaction/lightonai__LateOn"
 DEFAULT_DATASETS = ["beir_scifact"]
 DEFAULT_BASELINE_DIR = "tasks/late_interaction/baselines"
 DEFAULT_RECALL_KS_TO_REPORT = (10, 100)
+DEFAULT_CACHE_MODEL = "lightonai/LateOn"
 
 
 @dataclass(frozen=True)
@@ -76,7 +84,14 @@ def run_evaluation(
     timed_repeats: int = 3,
     recall_k: int = 1000,
     ndcg_k: int = 10,
+    qrels_mode: str = "gold",
+    aspect_alpha: float = 0.5,
     extra_recall_ks: tuple[int, ...] = DEFAULT_RECALL_KS_TO_REPORT,
+    auto_cache: bool = True,
+    cache_model: str = DEFAULT_CACHE_MODEL,
+    cache_dtype: str = "float16",
+    cache_batch_size: int = 16,
+    beir_data_dir: str = "datasets/beir",
     progress: bool = False,
     output_path: Path | None = None,
     resume: bool = True,
@@ -91,7 +106,7 @@ def run_evaluation(
     `resume=False` to ignore an existing file and re-run everything.
     """
     cache_root = Path(cache_root)
-    dataset_list = list(datasets)
+    dataset_list = [_canonical_dataset_id(dataset) for dataset in datasets]
     fingerprint = _runtime.runtime_fingerprint()
     run_config = {
         "sample_queries": sample_queries,
@@ -99,7 +114,11 @@ def run_evaluation(
         "timed_repeats": timed_repeats,
         "recall_k": recall_k,
         "ndcg_k": ndcg_k,
+        "qrels_mode": qrels_mode,
+        "aspect_alpha": aspect_alpha,
         "extra_recall_ks": list(extra_recall_ks),
+        "cache_model": cache_model,
+        "cache_dtype": cache_dtype,
     }
 
     # Load existing payload (resume) or start fresh.
@@ -113,11 +132,39 @@ def run_evaluation(
     # `dataset_payloads` accumulates JSON-shaped per-dataset blocks (loaded
     # ones from disk + newly computed ones). This is the canonical state
     # written to the JSON file after every dataset completes.
-    dataset_payloads: dict[str, dict[str, float | int]] = dict(existing_dataset_payloads)
+    dataset_payloads: dict[str, dict[str, object]] = dict(existing_dataset_payloads)
     fresh_results: dict[str, WorkerResult] = {}
+    encoder_model = None
 
     for dataset_idx, dataset_name in enumerate(dataset_list, start=1):
         cache_dir = cache_root / dataset_name
+        if not cache_dir.exists():
+            if auto_cache:
+                if progress:
+                    print(
+                        f"[eval] cache missing for {dataset_name}; encoding with {cache_model}",
+                        flush=True,
+                    )
+                from tasks.late_interaction.encode_embeddings import (
+                    ensure_embedding_cache,
+                    load_pylate_model,
+                )
+
+                if encoder_model is None:
+                    encoder_model = load_pylate_model(cache_model)
+                cache_dir = ensure_embedding_cache(
+                    dataset_name,
+                    cache_root=cache_root,
+                    model_name=cache_model,
+                    batch_size=cache_batch_size,
+                    dtype=cache_dtype,
+                    beir_data_dir=beir_data_dir,
+                    model=encoder_model,
+                )
+            else:
+                if progress:
+                    print(f"[eval] SKIP {dataset_name}: cache missing at {cache_dir}", flush=True)
+                continue
         if not cache_dir.exists():
             if progress:
                 print(f"[eval] SKIP {dataset_name}: cache missing at {cache_dir}", flush=True)
@@ -143,6 +190,8 @@ def run_evaluation(
             warmup_queries=warmup_queries,
             timed_repeats=timed_repeats,
             extra_recall_ks=extra_recall_ks,
+            qrels_mode=qrels_mode,
+            aspect_alpha=aspect_alpha,
             progress=progress,
         )
         fresh_results[dataset_name] = result
@@ -185,6 +234,13 @@ def evaluate(program_path: str = "") -> dict[str, float]:
     ndcg_k = int(os.environ.get("EVAL_NDCG_K", "10"))
     warmup_queries = int(os.environ.get("EVAL_WARMUP_QUERIES", "10"))
     timed_repeats = int(os.environ.get("EVAL_TIMED_REPEATS", "3"))
+    qrels_mode = os.environ.get("EVAL_QRELS_MODE", "gold").strip() or "gold"
+    aspect_alpha = float(os.environ.get("EVAL_ASPECT_ALPHA", "0.5"))
+    auto_cache = _parse_bool_env("EVAL_AUTO_CACHE", default=True)
+    cache_model = os.environ.get("EVAL_CACHE_MODEL", DEFAULT_CACHE_MODEL)
+    cache_dtype = os.environ.get("EVAL_CACHE_DTYPE", "float16")
+    cache_batch_size = int(os.environ.get("EVAL_CACHE_BATCH_SIZE", "16"))
+    beir_data_dir = os.environ.get("EVAL_BEIR_DATA_DIR", "datasets/beir")
     progress = _parse_bool_env("EVAL_PROGRESS", default=False)
 
     output = run_evaluation(
@@ -196,6 +252,13 @@ def evaluate(program_path: str = "") -> dict[str, float]:
         timed_repeats=timed_repeats,
         recall_k=recall_k,
         ndcg_k=ndcg_k,
+        qrels_mode=qrels_mode,
+        aspect_alpha=aspect_alpha,
+        auto_cache=auto_cache,
+        cache_model=cache_model,
+        cache_dtype=cache_dtype,
+        cache_batch_size=cache_batch_size,
+        beir_data_dir=beir_data_dir,
         progress=progress,
     )
     return _flatten_metrics(output)
@@ -245,6 +308,17 @@ def _build_cli() -> argparse.ArgumentParser:
     parser.add_argument("--timed-repeats", type=int, default=3)
     parser.add_argument("--recall-k", type=int, default=1000)
     parser.add_argument("--ndcg-k", type=int, default=10)
+    parser.add_argument("--qrels-mode", default="gold", choices=["gold", "pooled"])
+    parser.add_argument("--aspect-alpha", type=float, default=0.5)
+    parser.add_argument("--cache-model", default=DEFAULT_CACHE_MODEL)
+    parser.add_argument("--cache-dtype", default="float16", choices=["float16", "float32"])
+    parser.add_argument("--cache-batch-size", type=int, default=16)
+    parser.add_argument("--beir-data-dir", default="datasets/beir")
+    parser.add_argument(
+        "--no-auto-cache",
+        action="store_true",
+        help="Skip datasets with missing embedding caches instead of downloading and encoding them.",
+    )
     parser.add_argument(
         "--output",
         default=None,
@@ -296,7 +370,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"[eval] device={device}, datasets={','.join(args.datasets)}, "
         f"sample_queries={sample_queries_label}, warmup_queries={args.warmup_queries}, "
-        f"timed_repeats={args.timed_repeats}",
+        f"timed_repeats={args.timed_repeats}, qrels_mode={args.qrels_mode}",
         flush=True,
     )
 
@@ -309,6 +383,13 @@ def main(argv: list[str] | None = None) -> int:
         timed_repeats=args.timed_repeats,
         recall_k=args.recall_k,
         ndcg_k=args.ndcg_k,
+        qrels_mode=args.qrels_mode,
+        aspect_alpha=args.aspect_alpha,
+        auto_cache=not args.no_auto_cache,
+        cache_model=args.cache_model,
+        cache_dtype=args.cache_dtype,
+        cache_batch_size=args.cache_batch_size,
+        beir_data_dir=args.beir_data_dir,
         progress=True,
         output_path=output_path,
         resume=not args.no_resume,
@@ -338,18 +419,29 @@ def _parse_bool_env(name: str, *, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _canonical_dataset_id(dataset: str) -> str:
+    if ":" not in dataset:
+        return dataset
+    benchmark, name = dataset.split(":", maxsplit=1)
+    if benchmark == "bright_pro":
+        return f"bright_pro_{name}"
+    return f"{benchmark}_{name}"
+
+
 def _flatten_metrics(output: EvaluationOutput) -> dict[str, float]:
     """Flatten an `EvaluationOutput` into the controller's `dict[str, float]`."""
     results = list(output.per_dataset.values())
-    recall = float(np.mean([r.recall_at_1000 for r in results])) if results else 0.0
-    ndcg = float(np.mean([r.ndcg_at_10 for r in results])) if results else 0.0
+    recall_k = results[0].recall_k if results else 1000
+    ndcg_k = results[0].ndcg_k if results else 10
+    recall = float(np.mean([r.recall_at_k for r in results])) if results else 0.0
+    ndcg = float(np.mean([r.ndcg_at_k for r in results])) if results else 0.0
     latency_p50 = float(np.mean([r.latency_p50_ms for r in results])) if results else 0.0
     latency_p95 = float(np.mean([r.latency_p95_ms for r in results])) if results else 0.0
     latency_mean = float(np.mean([r.latency_mean_ms for r in results])) if results else 0.0
 
     metrics: dict[str, float] = {
-        "recall_at_1000": recall,
-        "ndcg_at_10": ndcg,
+        f"recall_at_{recall_k}": recall,
+        f"ndcg_at_{ndcg_k}": ndcg,
         "latency_p50_ms": latency_p50,
         "latency_p95_ms": latency_p95,
         "latency_mean_ms": latency_mean,
@@ -367,7 +459,7 @@ def _build_payload_from_dicts(
     run_config: dict,
     program_path: str | Path | None,
     ordered_datasets: list[str],
-    dataset_payloads: dict[str, dict[str, float | int]],
+    dataset_payloads: dict[str, dict[str, object]],
 ) -> dict:
     """Assemble the on-disk JSON from already-serialized per-dataset dicts.
 
@@ -396,19 +488,38 @@ def _build_payload_from_dicts(
                         pass
 
         def _avg(field: str) -> float:
-            return float(np.mean([
-                float(block[field]) for block in dataset_payloads.values() if field in block
-            ]))
+            values = [
+                float(block[field])
+                for block in dataset_payloads.values()
+                if isinstance(block.get(field), int | float)
+            ]
+            return float(np.mean(values)) if values else 0.0
 
         average: dict[str, float | int] = {
             "median_query_latency_ms": _avg("median_query_latency_ms"),
             "p95_query_latency_ms": _avg("p95_query_latency_ms"),
             "mean_query_latency_ms": _avg("mean_query_latency_ms"),
             "build_time_ms": _avg("build_time_ms"),
-            "ndcg_at_10": _avg("ndcg_at_10"),
         }
+        ndcg_ks: set[int] = set()
+        extra_metric_keys: set[str] = set()
+        for block in dataset_payloads.values():
+            for key, value in block.items():
+                if not isinstance(value, int | float):
+                    continue
+                if key.startswith("ndcg_at_"):
+                    try:
+                        ndcg_ks.add(int(key.split("_")[-1]))
+                    except ValueError:
+                        pass
+                if key.startswith(("alpha_ndcg_at_", "aspect_recall_at_", "graded_ndcg_at_")):
+                    extra_metric_keys.add(key)
         for k in sorted(recall_ks):
             average[f"recall_at_{k}"] = _avg(f"recall_at_{k}")
+        for k in sorted(ndcg_ks):
+            average[f"ndcg_at_{k}"] = _avg(f"ndcg_at_{k}")
+        for key in sorted(extra_metric_keys):
+            average[key] = _avg(key)
         payload["_average"] = average
     return payload
 
@@ -420,7 +531,7 @@ def _write_payload_atomic(
     run_config: dict,
     program_path: str | Path | None,
     ordered_datasets: list[str],
-    dataset_payloads: dict[str, dict[str, float | int]],
+    dataset_payloads: dict[str, dict[str, object]],
 ) -> None:
     """Write the JSON via tempfile + os.replace so a crash mid-write can't
     leave the file half-written. Posix rename is atomic on the same fs."""
@@ -455,7 +566,7 @@ def _load_existing_for_resume(
     fingerprint: dict,
     run_config: dict,
     program_path: str | Path | None,
-) -> tuple[dict[str, dict[str, float | int]], list[str]]:
+) -> tuple[dict[str, dict[str, object]], list[str]]:
     """Read the existing output JSON for resume; validate it's compatible.
 
     Returns `(dataset_payloads, completed_dataset_names)`. Empty when there's
@@ -495,7 +606,7 @@ def _load_existing_for_resume(
             f"{existing_program!r} but this run uses {str(program_path)!r}. "
             "Pass --no-resume to overwrite, or use the matching --program."
         )
-    payloads: dict[str, dict[str, float | int]] = {}
+    payloads: dict[str, dict[str, object]] = {}
     for key, value in existing.items():
         if key.startswith("_"):
             continue
@@ -504,28 +615,33 @@ def _load_existing_for_resume(
     return payloads, list(payloads.keys())
 
 
-def _serialize_dataset_result(result: WorkerResult) -> dict[str, float | int]:
-    out: dict[str, float | int] = {
+def _serialize_dataset_result(result: WorkerResult) -> dict[str, object]:
+    out: dict[str, object] = {
         "median_query_latency_ms": result.latency_p50_ms,
         "p95_query_latency_ms": result.latency_p95_ms,
         "mean_query_latency_ms": result.latency_mean_ms,
         "build_time_ms": result.build_time_ms,
-        "recall_at_1000": result.recall_at_1000,
-        "ndcg_at_10": result.ndcg_at_10,
+        f"recall_at_{result.recall_k}": result.recall_at_k,
+        f"ndcg_at_{result.ndcg_k}": result.ndcg_at_k,
         "num_queries": result.num_queries,
         "warmup_queries": result.warmup_queries,
         "timed_repeats": result.timed_repeats,
+        "qrels_mode": result.qrels_mode,
+        "cache_metadata": result.cache_metadata,
     }
     for k, v in result.extra_recall.items():
         out[f"recall_at_{k}"] = float(v)
+    for key, value in result.extra_metrics.items():
+        out[key] = float(value)
     return out
 
 
 def _print_result_line(dataset_name: str, result: WorkerResult) -> None:
     extras = " ".join(f"recall@{k}={v:.4f}" for k, v in sorted(result.extra_recall.items()))
+    extra_metrics = " ".join(f"{k}={v:.4f}" for k, v in sorted(result.extra_metrics.items()))
     print(
-        f"  {dataset_name:24s} | recall@1000={result.recall_at_1000:.4f} "
-        f"ndcg@10={result.ndcg_at_10:.4f} {extras} "
+        f"  {dataset_name:24s} | recall@{result.recall_k}={result.recall_at_k:.4f} "
+        f"ndcg@{result.ndcg_k}={result.ndcg_at_k:.4f} {extras} {extra_metrics} "
         f"| p50={result.latency_p50_ms:7.2f}ms p95={result.latency_p95_ms:7.2f}ms "
         f"mean={result.latency_mean_ms:7.2f}ms build={result.build_time_ms:7.1f}ms "
         f"| n={result.num_queries} warmup={result.warmup_queries} repeats={result.timed_repeats}",

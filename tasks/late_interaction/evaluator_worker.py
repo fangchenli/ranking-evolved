@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+# ruff: noqa: I001
+
 # Import _runtime first so BLAS pinning takes effect before numpy/torch import.
 from tasks.late_interaction import _runtime  # noqa: F401
 
@@ -11,13 +13,20 @@ import os
 import statistics
 import sys
 import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any
 
 import numpy as np
 
-from tasks._shared.metrics import ndcg_at_k, recall_at_k
+from tasks._shared.metrics import (
+    alpha_ndcg_at_k,
+    aspect_recall_at_k,
+    graded_ndcg_at_k,
+    ndcg_at_k,
+    recall_at_k,
+)
 from tasks.late_interaction.embedding_cache import TokenEmbeddingStore, load_embedding_cache
 from tasks.late_interaction.library import ExactMaxSimRetriever
 
@@ -25,8 +34,11 @@ from tasks.late_interaction.library import ExactMaxSimRetriever
 @dataclass(frozen=True)
 class WorkerResult:
     dataset: str
-    recall_at_1000: float
-    ndcg_at_10: float
+    recall_at_k: float
+    ndcg_at_k: float
+    recall_k: int
+    ndcg_k: int
+    qrels_mode: str
     latency_p50_ms: float
     latency_p95_ms: float
     latency_mean_ms: float
@@ -49,14 +61,24 @@ class WorkerResult:
     # Recall at additional k (10, 100, ...) — populated when `extra_recall_ks`
     # is passed to `evaluate_cache_dataset`. Empty by default.
     extra_recall: dict[int, float] = field(default_factory=dict)
+    extra_metrics: dict[str, float] = field(default_factory=dict)
+    cache_metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def recall_at_1000(self) -> float:
+        return self.recall_at_k
+
+    @property
+    def ndcg_at_10(self) -> float:
+        return self.ndcg_at_k
 
     def to_metrics(self) -> dict[str, float]:
         # `query_latency_median_ms` is the framework-level key the
         # latency-aware objective reads; alias it to p50 here so the
         # late-interaction worker plays the same role bm25's worker plays.
         out: dict[str, float] = {
-            f"{self.dataset}_recall_at_1000": self.recall_at_1000,
-            f"{self.dataset}_ndcg_at_10": self.ndcg_at_10,
+            f"{self.dataset}_recall_at_{self.recall_k}": self.recall_at_k,
+            f"{self.dataset}_ndcg_at_{self.ndcg_k}": self.ndcg_at_k,
             f"{self.dataset}_latency_p50_ms": self.latency_p50_ms,
             f"{self.dataset}_latency_p95_ms": self.latency_p95_ms,
             f"{self.dataset}_latency_mean_ms": self.latency_mean_ms,
@@ -73,6 +95,8 @@ class WorkerResult:
         }
         for k, v in self.extra_recall.items():
             out[f"{self.dataset}_recall_at_{k}"] = float(v)
+        for key, value in self.extra_metrics.items():
+            out[f"{self.dataset}_{key}"] = float(value)
         return out
 
 
@@ -87,6 +111,8 @@ def evaluate_cache_dataset(
     timed_repeats: int | None = None,
     retriever_factory: Callable[[], Any] | None = None,
     extra_recall_ks: tuple[int, ...] = (),
+    qrels_mode: str = "gold",
+    aspect_alpha: float = 0.5,
     progress: bool = False,
 ) -> WorkerResult:
     """Evaluate one cached dataset with exact/supplied late-interaction retrieval.
@@ -110,7 +136,7 @@ def evaluate_cache_dataset(
     if timed_repeats < 1:
         raise ValueError(f"timed_repeats must be >= 1, got {timed_repeats}")
 
-    cache = load_embedding_cache(cache_dir)
+    cache = load_embedding_cache(cache_dir, qrels_mode=qrels_mode)
     total_available = len(cache.queries)
 
     # Unified warmup rule: warmup queries are always a prefix of the measured
@@ -125,7 +151,6 @@ def evaluate_cache_dataset(
     warmup_count = min(warmup_queries, measured_query_count)
 
     selected_queries = slice_query_store(cache.queries, 0, measured_query_count)
-    warmup_query_ids = selected_queries.ids[:warmup_count]
     measured_query_ids = selected_queries.ids
 
     if retriever_factory is not None:
@@ -138,6 +163,11 @@ def evaluate_cache_dataset(
     build_time_ms = (time.perf_counter() - start_build) * 1000.0
 
     top_k = max(recall_k, ndcg_k)
+    max_excluded = max(
+        (len(cache.excluded_ids.get(query_id, [])) for query_id in measured_query_ids),
+        default=0,
+    )
+    search_top_k = min(len(cache.docs), top_k + max_excluded)
     latencies_ms: list[float] = []
     rankings: dict[str, list[tuple[str, float]]] = {}
 
@@ -153,7 +183,7 @@ def evaluate_cache_dataset(
         for warmup_idx in range(warmup_count):
             wq = slice_query_store(selected_queries, warmup_idx, warmup_idx + 1)
             _maybe_cuda_sync()
-            retriever.search(wq, top_k=top_k)
+            retriever.search(wq, top_k=search_top_k)
             _maybe_cuda_sync()
 
         # Pass 2: timed pass over the WHOLE measured set (including the
@@ -174,14 +204,17 @@ def evaluate_cache_dataset(
             for _ in range(timed_repeats):
                 _maybe_cuda_sync()
                 start = time.perf_counter()
-                last_ranking = retriever.search(one_query, top_k=top_k)
+                last_ranking = retriever.search(one_query, top_k=search_top_k)
                 _maybe_cuda_sync()
                 per_call_ms.append((time.perf_counter() - start) * 1000.0)
             latencies_ms.append(float(statistics.median(per_call_ms)))
             assert last_ranking is not None
-            rankings[selected_queries.ids[query_index]] = last_ranking[
-                selected_queries.ids[query_index]
-            ]
+            query_id = selected_queries.ids[query_index]
+            rankings[query_id] = _filter_excluded(
+                last_ranking[query_id],
+                excluded_ids=set(cache.excluded_ids.get(query_id, [])),
+                top_k=top_k,
+            )
             # Live p50 update on the bar (every query is cheap).
             if progress and hasattr(timed_iter, "set_postfix"):
                 timed_iter.set_postfix(  # type: ignore[attr-defined]
@@ -193,12 +226,33 @@ def evaluate_cache_dataset(
 
     recall_scores: list[float] = []
     ndcg_scores: list[float] = []
+    graded_ndcg_scores: list[float] = []
+    alpha_ndcg_scores: list[float] = []
+    aspect_recall_scores: list[float] = []
     extra_recall_scores: dict[int, list[float]] = {k: [] for k in extra_recall_ks}
     for query_id in measured_query_ids:
-        relevant = relevant_indices(cache.qrels.get(query_id, {}), cache.docs)
+        qrel = cache.qrels.get(query_id, {})
+        relevant = relevant_indices(qrel, cache.docs)
         retrieved = retrieved_indices(rankings[query_id], cache.docs)
+        retrieved_docs = [doc_id for doc_id, _score in rankings[query_id]]
         recall_scores.append(recall_at_k(relevant, retrieved, recall_k))
         ndcg_scores.append(ndcg_at_k(relevant, retrieved, ndcg_k))
+        graded_ndcg_scores.append(graded_ndcg_at_k(qrel, retrieved_docs, ndcg_k))
+        aspect = _aspect_for_query(cache.aspect_annotations, query_id)
+        if aspect is not None:
+            doc_to_aspect, aspect_weights = aspect
+            alpha_ndcg_scores.append(
+                alpha_ndcg_at_k(
+                    retrieved_docs,
+                    doc_to_aspect,
+                    aspect_weights,
+                    ndcg_k,
+                    alpha=aspect_alpha,
+                )
+            )
+            aspect_recall_scores.append(
+                aspect_recall_at_k(retrieved_docs, doc_to_aspect, aspect_weights, recall_k)
+            )
         for k in extra_recall_ks:
             extra_recall_scores[k].append(recall_at_k(relevant, retrieved, k))
 
@@ -206,10 +260,21 @@ def evaluate_cache_dataset(
     measured_diagnostics = [diagnostics.get(query_id) for query_id in measured_query_ids]
     measured_diagnostics = [diag for diag in measured_diagnostics if diag is not None]
 
+    extra_metrics: dict[str, float] = {
+        f"graded_ndcg_at_{ndcg_k}": float(np.mean(graded_ndcg_scores)) if graded_ndcg_scores else 0.0,
+    }
+    if alpha_ndcg_scores:
+        extra_metrics[f"alpha_ndcg_at_{ndcg_k}"] = float(np.mean(alpha_ndcg_scores))
+    if aspect_recall_scores:
+        extra_metrics[f"aspect_recall_at_{recall_k}"] = float(np.mean(aspect_recall_scores))
+
     return WorkerResult(
         dataset=cache.metadata.dataset_name,
-        recall_at_1000=float(np.mean(recall_scores)) if recall_scores else 0.0,
-        ndcg_at_10=float(np.mean(ndcg_scores)) if ndcg_scores else 0.0,
+        recall_at_k=float(np.mean(recall_scores)) if recall_scores else 0.0,
+        ndcg_at_k=float(np.mean(ndcg_scores)) if ndcg_scores else 0.0,
+        recall_k=recall_k,
+        ndcg_k=ndcg_k,
+        qrels_mode=cache.qrels_mode,
         latency_p50_ms=float(statistics.median(latencies_ms)) if latencies_ms else 0.0,
         latency_p95_ms=percentile(latencies_ms, 95.0),
         latency_mean_ms=float(np.mean(latencies_ms)) if latencies_ms else 0.0,
@@ -224,6 +289,8 @@ def evaluate_cache_dataset(
         corpus_coverage=_diagnostic_mean(measured_diagnostics, "corpus_coverage"),
         fingerprint=_runtime.runtime_fingerprint(),
         extra_recall={k: (float(np.mean(v)) if v else 0.0) for k, v in extra_recall_scores.items()},
+        extra_metrics=extra_metrics,
+        cache_metadata=dict(cache.metadata.__dict__),
     )
 
 
@@ -310,6 +377,35 @@ def relevant_indices(qrels: dict[str, int], docs: TokenEmbeddingStore) -> np.nda
 
 def retrieved_indices(ranking: list[tuple[str, float]], docs: TokenEmbeddingStore) -> np.ndarray:
     return np.asarray([docs.index_of(doc_id) for doc_id, _score in ranking], dtype=np.int64)
+
+
+def _filter_excluded(
+    ranking: list[tuple[str, float]],
+    *,
+    excluded_ids: set[str],
+    top_k: int,
+) -> list[tuple[str, float]]:
+    if not excluded_ids:
+        return ranking[:top_k]
+    return [(doc_id, score) for doc_id, score in ranking if doc_id not in excluded_ids][:top_k]
+
+
+def _aspect_for_query(
+    annotations: dict[str, Any] | None,
+    query_id: str,
+) -> tuple[dict[str, str], dict[str, float]] | None:
+    if not annotations:
+        return None
+    doc_to_aspect = (annotations.get("query_doc_to_aspect") or {}).get(query_id, {})
+    aspect_weights = (annotations.get("query_aspect_weights") or {}).get(query_id, {})
+    if not isinstance(doc_to_aspect, dict) or not isinstance(aspect_weights, dict):
+        return None
+    if not doc_to_aspect or not aspect_weights:
+        return None
+    return (
+        {str(doc_id): str(aspect_id) for doc_id, aspect_id in doc_to_aspect.items()},
+        {str(aspect_id): float(weight) for aspect_id, weight in aspect_weights.items()},
+    )
 
 
 def percentile(values: list[float], p: float) -> float:

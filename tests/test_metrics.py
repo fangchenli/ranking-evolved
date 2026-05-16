@@ -4,7 +4,10 @@ import numpy as np
 import pytest
 
 from tasks._shared.metrics import (
+    alpha_ndcg_at_k,
+    aspect_recall_at_k,
     average_precision,
+    graded_ndcg_at_k,
     ndcg_at_k,
     precision_at_k,
     recall_at_k,
@@ -70,6 +73,30 @@ def test_ndcg_at_k_binary_relevance():
 
     # Empty relevant -> NDCG = 0 (avoid div by zero)
     assert ndcg_at_k(np.array([]), np.array([0, 1, 2]), 3) == 0.0
+
+
+def test_graded_ndcg_at_k_uses_qrel_scores():
+    qrels = {"d1": 2, "d2": 1}
+    retrieved = ["d2", "d1", "d3"]
+    dcg = 1 / np.log2(2) + 2 / np.log2(3)
+    idcg = 2 / np.log2(2) + 1 / np.log2(3)
+    assert graded_ndcg_at_k(qrels, retrieved, 3) == pytest.approx(dcg / idcg)
+
+
+def test_aspect_recall_at_k_credits_each_aspect_once():
+    doc_to_aspect = {"d1": "a1", "d2": "a1", "d3": "a2"}
+    weights = {"a1": 0.75, "a2": 0.25}
+    assert aspect_recall_at_k(["d2", "d1"], doc_to_aspect, weights, 2) == pytest.approx(0.75)
+    assert aspect_recall_at_k(["d2", "d3"], doc_to_aspect, weights, 2) == pytest.approx(1.0)
+
+
+def test_alpha_ndcg_penalizes_repeated_aspect_hits():
+    doc_to_aspect = {"d1": "a1", "d2": "a1", "d3": "a2"}
+    weights = {"a1": 0.5, "a2": 0.5}
+    diverse = alpha_ndcg_at_k(["d1", "d3"], doc_to_aspect, weights, 2, alpha=0.5)
+    redundant = alpha_ndcg_at_k(["d1", "d2"], doc_to_aspect, weights, 2, alpha=0.5)
+    assert diverse == pytest.approx(1.0)
+    assert redundant < diverse
 
 
 def test_reciprocal_rank():

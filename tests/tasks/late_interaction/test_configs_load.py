@@ -17,6 +17,9 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 LATE_INTERACTION_CONFIG = (
     REPO_ROOT / "tasks" / "late_interaction" / "configs" / "freeform_latency_aware.yaml"
 )
+NEW_BENCHMARK_CONFIG = (
+    REPO_ROOT / "tasks" / "late_interaction" / "configs" / "new_benchmarks_latency_aware.yaml"
+)
 
 
 @pytest.mark.skipif(not LATE_INTERACTION_CONFIG.exists(), reason="config not yet written")
@@ -80,6 +83,22 @@ def test_freeform_latency_aware_yaml_parses(monkeypatch):
     # ${EVAL_DEVICE} should have been interpolated using the value seeded from
     # evaluation.env (cpu) — the loader's pre-pass enables this.
     assert "exact_maxsim.cpu.json" in config.objective.latency.baseline_path
+
+
+def test_new_benchmarks_latency_aware_yaml_parses(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-for-yaml-parse")
+    config = load_config(NEW_BENCHMARK_CONFIG)
+
+    env = config.evaluation.env
+    assert "bright_pro_economics" in env["EVAL_DATASETS"]
+    assert "obliq_congress" in env["EVAL_DATASETS"]
+    assert str(env["EVAL_RECALL_K"]) == "25"
+    assert str(env["EVAL_NDCG_K"]) == "25"
+    assert env["EVAL_QRELS_MODE"] == "gold"
+    assert config.objective.recall_metric_key == "aspect_recall_at_25"
+    assert config.objective.ndcg_metric_key == "alpha_ndcg_at_25"
+    assert config.objective.metric_key_fallback is True
+    assert "new_benchmarks_curated.gold.cpu.json" in config.objective.latency.baseline_path
 
 
 def test_unknown_evaluation_env_value_does_not_break_loader(tmp_path, monkeypatch):

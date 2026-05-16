@@ -1,3 +1,5 @@
+from collections.abc import Mapping, Sequence
+
 import numpy as np
 
 
@@ -113,6 +115,116 @@ def ndcg_at_k(relevant: np.ndarray, retrieved: np.ndarray, k: int) -> float:
     idcg = np.sum(np.array(ideal_gains) / np.array(discounts))
 
     return dcg / idcg if idcg > 0 else 0.0
+
+
+def graded_ndcg_at_k(relevance_by_doc: Mapping[str, int], retrieved_doc_ids: Sequence[str], k: int) -> float:
+    """Compute graded nDCG@k from integer qrel scores."""
+    if k <= 0 or not relevance_by_doc:
+        return 0.0
+    gains = [float(relevance_by_doc.get(doc_id, 0)) for doc_id in retrieved_doc_ids[:k]]
+    gains.extend([0.0] * (k - len(gains)))
+    discounts = np.asarray([np.log2(i + 2) for i in range(k)], dtype=np.float64)
+    dcg = float(np.sum(np.asarray(gains, dtype=np.float64) / discounts))
+    ideal = sorted((float(v) for v in relevance_by_doc.values() if v > 0), reverse=True)[:k]
+    ideal.extend([0.0] * (k - len(ideal)))
+    idcg = float(np.sum(np.asarray(ideal, dtype=np.float64) / discounts))
+    return dcg / idcg if idcg > 0.0 else 0.0
+
+
+def aspect_recall_at_k(
+    retrieved_doc_ids: Sequence[str],
+    doc_to_aspect: Mapping[str, str],
+    aspect_weights: Mapping[str, float],
+    k: int,
+) -> float:
+    """Weighted aspect recall@k for BRIGHT-Pro-style annotations."""
+    if k <= 0 or not aspect_weights:
+        return 0.0
+    covered = {
+        doc_to_aspect[doc_id]
+        for doc_id in retrieved_doc_ids[:k]
+        if doc_id in doc_to_aspect
+    }
+    return float(sum(float(weight) for aspect_id, weight in aspect_weights.items() if aspect_id in covered))
+
+
+def alpha_ndcg_at_k(
+    retrieved_doc_ids: Sequence[str],
+    doc_to_aspect: Mapping[str, str],
+    aspect_weights: Mapping[str, float],
+    k: int,
+    *,
+    alpha: float = 0.5,
+) -> float:
+    """Aspect-weighted alpha-nDCG@k with novelty penalty.
+
+    The implementation follows the BRIGHT-Pro static metric: each gold
+    document belongs to one aspect, each aspect has a normalized weight, and
+    repeated hits for the same aspect are discounted by ``(1 - alpha)^count``.
+    """
+    if k <= 0 or not aspect_weights or not doc_to_aspect:
+        return 0.0
+    if not 0.0 <= alpha <= 1.0:
+        raise ValueError(f"alpha must be in [0, 1], got {alpha}")
+
+    dcg = _alpha_dcg(retrieved_doc_ids[:k], doc_to_aspect, aspect_weights, k, alpha=alpha)
+    idcg = _alpha_idcg(doc_to_aspect, aspect_weights, k, alpha=alpha)
+    return dcg / idcg if idcg > 0.0 else 0.0
+
+
+def _alpha_dcg(
+    ranked_doc_ids: Sequence[str],
+    doc_to_aspect: Mapping[str, str],
+    aspect_weights: Mapping[str, float],
+    k: int,
+    *,
+    alpha: float,
+) -> float:
+    seen_counts = {aspect_id: 0 for aspect_id in aspect_weights}
+    total = 0.0
+    for rank, doc_id in enumerate(ranked_doc_ids[:k], start=1):
+        aspect_id = doc_to_aspect.get(doc_id)
+        if aspect_id is None:
+            continue
+        weight = float(aspect_weights.get(aspect_id, 0.0))
+        gain = weight * ((1.0 - alpha) ** seen_counts.get(aspect_id, 0))
+        seen_counts[aspect_id] = seen_counts.get(aspect_id, 0) + 1
+        total += gain / float(np.log2(rank + 1))
+    return float(total)
+
+
+def _alpha_idcg(
+    doc_to_aspect: Mapping[str, str],
+    aspect_weights: Mapping[str, float],
+    k: int,
+    *,
+    alpha: float,
+) -> float:
+    remaining = {aspect_id: 0 for aspect_id in aspect_weights}
+    for aspect_id in doc_to_aspect.values():
+        if aspect_id in remaining:
+            remaining[aspect_id] += 1
+
+    seen_counts = {aspect_id: 0 for aspect_id in aspect_weights}
+    total = 0.0
+    for rank in range(1, k + 1):
+        best_aspect: str | None = None
+        best_gain = 0.0
+        for aspect_id, count in remaining.items():
+            if count <= 0:
+                continue
+            gain = float(aspect_weights.get(aspect_id, 0.0)) * (
+                (1.0 - alpha) ** seen_counts.get(aspect_id, 0)
+            )
+            if best_aspect is None or gain > best_gain:
+                best_aspect = aspect_id
+                best_gain = gain
+        if best_aspect is None:
+            break
+        total += best_gain / float(np.log2(rank + 1))
+        remaining[best_aspect] -= 1
+        seen_counts[best_aspect] += 1
+    return float(total)
 
 
 def reciprocal_rank(relevant: np.ndarray, retrieved: np.ndarray) -> float:

@@ -46,8 +46,8 @@ weights and no per-dataset latency lookup is required.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
 
 from ..config.objective import AggregationConfig, ObjectiveConfig
 
@@ -111,6 +111,27 @@ def _metric_value(metrics: Mapping[str, float], canonical: str, alias: str) -> f
     return None
 
 
+def _objective_metric_value(
+    *,
+    dataset: str,
+    metrics: Mapping[str, float],
+    explicit_key: str,
+    canonical: str,
+    alias: str,
+    fallback: bool,
+) -> tuple[float | None, str | None]:
+    if explicit_key:
+        if explicit_key in metrics:
+            return float(metrics[explicit_key]), explicit_key
+        if not fallback:
+            raise ValueError(
+                f"dataset {dataset!r} is missing objective metric {explicit_key!r}; "
+                "enable objective.metric_key_fallback or choose a metric key emitted by every dataset"
+            )
+    value = _metric_value(metrics, canonical, alias)
+    return value, (canonical if value is not None else None)
+
+
 def compute_objective(
     per_dataset_metrics: Mapping[str, Mapping[str, float]],
     baseline_latency_by_dataset: Mapping[str, float] | None,
@@ -145,11 +166,25 @@ def compute_objective(
 
     for dataset, metrics in per_dataset_metrics.items():
         ds_out: dict[str, float] = {}
-        recall_value = _metric_value(metrics, rk, recall_alias)
+        recall_value, _ = _objective_metric_value(
+            dataset=dataset,
+            metrics=metrics,
+            explicit_key=cfg.recall_metric_key,
+            canonical=rk,
+            alias=recall_alias,
+            fallback=cfg.metric_key_fallback,
+        )
         if recall_value is not None:
             recalls.append(recall_value)
             ds_out[rk] = recall_value
-        ndcg_value = _metric_value(metrics, nk, ndcg_alias)
+        ndcg_value, _ = _objective_metric_value(
+            dataset=dataset,
+            metrics=metrics,
+            explicit_key=cfg.ndcg_metric_key,
+            canonical=nk,
+            alias=ndcg_alias,
+            fallback=cfg.metric_key_fallback,
+        )
         if ndcg_value is not None:
             ndcgs.append(ndcg_value)
             ds_out[nk] = ndcg_value

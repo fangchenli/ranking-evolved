@@ -25,7 +25,13 @@ from typing import Any
 
 import numpy as np
 
-from tasks._shared.datasets import BEIRLoader, BRIGHTLoader, EvalDataset
+from tasks._shared.datasets import (
+    BEIRLoader,
+    BRIGHTLoader,
+    BrightProLoader,
+    EvalDataset,
+    OBLIQBenchLoader,
+)
 from tasks.late_interaction.embedding_cache import (
     CacheMetadata,
     write_embedding_cache,
@@ -44,11 +50,36 @@ MAIN_SUITE = [
     "bright:earth_science",
 ]
 
+NEW_BENCHMARKS_CURATED_SUITE = [
+    "bright_pro:economics",
+    "bright_pro:stackoverflow",
+    "bright_pro:earth_science",
+    "obliq:twitter",
+    "obliq:congress",
+]
+
+NEW_BENCHMARKS_ALL_SUITE = [
+    "bright_pro:biology",
+    "bright_pro:earth_science",
+    "bright_pro:economics",
+    "bright_pro:psychology",
+    "bright_pro:robotics",
+    "bright_pro:stackoverflow",
+    "bright_pro:sustainable_living",
+    "obliq:math",
+    "obliq:writing",
+    "obliq:twitter",
+    "obliq:wildchat",
+    "obliq:congress",
+]
+
 SUITES = {
     "smoke": ["beir:scifact"],
     "early": ["beir:scifact", "beir:nfcorpus", "beir:arguana"],
     "main": MAIN_SUITE,
     "full": MAIN_SUITE,
+    "new-benchmarks-curated": NEW_BENCHMARKS_CURATED_SUITE,
+    "new-benchmarks-all": NEW_BENCHMARKS_ALL_SUITE,
 }
 
 
@@ -169,6 +200,9 @@ def main(argv: list[str] | None = None) -> int:
                 doc_chunks=doc_chunks,
                 query_chunks=query_chunks,
                 dtype=args.dtype,
+                qrels_modes=sorted(dataset.qrels_by_mode or {"gold": dataset.qrels}),
+                has_excluded_ids=bool(dataset.excluded_ids),
+                has_aspect_annotations=dataset.aspect_annotations is not None,
             )
             bytes_per_value = np.dtype(args.dtype).itemsize
             estimated_bytes = (
@@ -188,6 +222,9 @@ def main(argv: list[str] | None = None) -> int:
                 query_embeddings=query_chunks,
                 query_ids=dataset.query_ids,
                 qrels=dataset.qrels,
+                qrels_by_mode=dataset.qrels_by_mode,
+                excluded_ids=dataset.excluded_ids,
+                aspect_annotations=serialize_aspect_annotations(dataset),
                 metadata=metadata,
                 overwrite=args.overwrite,
             )
@@ -244,6 +281,86 @@ def resolve_dataset_specs(args: argparse.Namespace) -> list[str]:
     return SUITES[args.suite]
 
 
+def ensure_embedding_cache(
+    dataset_id: str,
+    *,
+    cache_root: str | Path,
+    model_name: str = DEFAULT_MODEL,
+    beir_data_dir: str = "datasets/beir",
+    batch_size: int = 16,
+    dtype: str = "float16",
+    max_doc_tokens: int | None = None,
+    max_query_tokens: int | None = None,
+    overwrite: bool = False,
+    model: Any | None = None,
+) -> Path:
+    """Create one cache if missing; return the cache directory.
+
+    `cache_root` is the model-specific evaluator root, e.g.
+    `cache/late_interaction/lightonai__LateOn`, not the parent
+    `cache/late_interaction` used by the standalone encoder CLI.
+    """
+    dataset = load_eval_dataset(dataset_id, beir_data_dir=beir_data_dir)
+    cache_dir = Path(cache_root) / dataset.name
+    status = check_existing_cache(cache_dir, dataset=dataset, model_name=model_name, dtype=dtype)
+    if status == "complete" and not overwrite:
+        return cache_dir
+    if status == "incomplete" and not overwrite:
+        raise RuntimeError(
+            f"Cache directory exists but is incomplete or incompatible: {cache_dir}. "
+            "Pass overwrite=True or remove the cache directory."
+        )
+
+    local_model = model if model is not None else load_pylate_model(model_name)
+    with tempfile.TemporaryDirectory(prefix=f"late_interaction_{dataset.name}_") as tmp:
+        tmp_dir = Path(tmp)
+        doc_chunks = encode_texts_to_chunks(
+            local_model,
+            dataset.corpus,
+            is_query=False,
+            batch_size=batch_size,
+            dtype=dtype,
+            max_tokens=max_doc_tokens,
+            label=f"{dataset.name} documents",
+            chunk_dir=tmp_dir / "docs",
+        )
+        query_chunks = encode_texts_to_chunks(
+            local_model,
+            dataset.queries,
+            is_query=True,
+            batch_size=batch_size,
+            dtype=dtype,
+            max_tokens=max_query_tokens,
+            label=f"{dataset.name} queries",
+            chunk_dir=tmp_dir / "queries",
+        )
+        metadata = build_metadata_from_chunks(
+            dataset_name=dataset.name,
+            benchmark=dataset.benchmark,
+            model_name=model_name,
+            doc_chunks=doc_chunks,
+            query_chunks=query_chunks,
+            dtype=dtype,
+            qrels_modes=sorted(dataset.qrels_by_mode or {"gold": dataset.qrels}),
+            has_excluded_ids=bool(dataset.excluded_ids),
+            has_aspect_annotations=dataset.aspect_annotations is not None,
+        )
+        write_embedding_cache(
+            cache_dir,
+            doc_embeddings=doc_chunks,
+            doc_ids=dataset.corpus_ids,
+            query_embeddings=query_chunks,
+            query_ids=dataset.query_ids,
+            qrels=dataset.qrels,
+            qrels_by_mode=dataset.qrels_by_mode,
+            excluded_ids=dataset.excluded_ids,
+            aspect_annotations=serialize_aspect_annotations(dataset),
+            metadata=metadata,
+            overwrite=True,
+        )
+    return cache_dir
+
+
 def check_existing_cache(
     cache_dir: Path,
     *,
@@ -288,6 +405,20 @@ def check_existing_cache(
             return "incomplete"
         if metadata.num_queries != dataset.num_queries:
             return "incomplete"
+        expected_modes = sorted(dataset.qrels_by_mode or {"gold": dataset.qrels})
+        if sorted(metadata.qrels_modes or ["gold"]) != expected_modes:
+            return "incomplete"
+        if metadata.has_excluded_ids != bool(dataset.excluded_ids):
+            return "incomplete"
+        if metadata.has_aspect_annotations != (dataset.aspect_annotations is not None):
+            return "incomplete"
+        for mode in expected_modes:
+            if mode != "gold" and not (cache_dir / f"qrels_{mode}.jsonl").is_file():
+                return "incomplete"
+        if metadata.has_excluded_ids and not (cache_dir / "excluded_ids.json").is_file():
+            return "incomplete"
+        if metadata.has_aspect_annotations and not (cache_dir / "aspect_annotations.json").is_file():
+            return "incomplete"
         if not store_files_match_metadata(cache_dir, "docs", metadata):
             return "incomplete"
         if not store_files_match_metadata(cache_dir, "queries", metadata):
@@ -318,6 +449,7 @@ def store_files_match_metadata(cache_dir: Path, prefix: str, metadata: CacheMeta
 
 
 def load_eval_dataset(spec: str, *, beir_data_dir: str) -> EvalDataset:
+    spec = normalize_dataset_spec(spec)
     try:
         benchmark, name = spec.split(":", maxsplit=1)
     except ValueError as exc:
@@ -327,7 +459,26 @@ def load_eval_dataset(spec: str, *, beir_data_dir: str) -> EvalDataset:
         return BEIRLoader(data_dir=beir_data_dir).load(name)
     if benchmark == "bright":
         return BRIGHTLoader().load(name)
+    if benchmark == "obliq":
+        return OBLIQBenchLoader().load(name)
+    if benchmark == "bright_pro":
+        return BrightProLoader().load(name)
     raise ValueError(f"Unsupported dataset benchmark: {benchmark}")
+
+
+def normalize_dataset_spec(spec: str) -> str:
+    """Accept either `benchmark:name` specs or canonical cache dataset ids."""
+    if ":" in spec:
+        return spec
+    if spec.startswith("beir_"):
+        return "beir:" + spec[len("beir_"):]
+    if spec.startswith("bright_pro_"):
+        return "bright_pro:" + spec[len("bright_pro_"):]
+    if spec.startswith("bright_"):
+        return "bright:" + spec[len("bright_"):]
+    if spec.startswith("obliq_"):
+        return "obliq:" + spec[len("obliq_"):]
+    raise ValueError(f"Unsupported dataset identifier: {spec!r}")
 
 
 def subset_docs(dataset: EvalDataset, max_docs: int) -> EvalDataset:
@@ -344,6 +495,12 @@ def subset_docs(dataset: EvalDataset, max_docs: int) -> EvalDataset:
         queries=dataset.queries,
         query_ids=dataset.query_ids,
         qrels=qrels,
+        qrels_by_mode={mode: {
+            qid: {doc_id: rel for doc_id, rel in rels.items() if doc_id in kept_doc_ids}
+            for qid, rels in mode_qrels.items()
+        } for mode, mode_qrels in dataset.qrels_by_mode.items()},
+        excluded_ids=dataset.excluded_ids,
+        aspect_annotations=dataset.aspect_annotations,
     )
 
 
@@ -357,6 +514,12 @@ def subset_queries(dataset: EvalDataset, max_queries: int) -> EvalDataset:
         queries=dataset.queries[:max_queries],
         query_ids=kept_query_ids,
         qrels={qid: dataset.qrels.get(qid, {}) for qid in kept_query_ids},
+        qrels_by_mode={
+            mode: {qid: mode_qrels.get(qid, {}) for qid in kept_query_ids}
+            for mode, mode_qrels in dataset.qrels_by_mode.items()
+        },
+        excluded_ids={qid: dataset.excluded_ids.get(qid, []) for qid in kept_query_ids},
+        aspect_annotations=_subset_aspect_annotations(dataset, kept_query_ids),
     )
 
 
@@ -465,6 +628,9 @@ def build_metadata_from_chunks(
     doc_chunks: EncodedChunkCollection,
     query_chunks: EncodedChunkCollection,
     dtype: str,
+    qrels_modes: list[str] | None = None,
+    has_excluded_ids: bool = False,
+    has_aspect_annotations: bool = False,
 ) -> CacheMetadata:
     if doc_chunks.embedding_dim != query_chunks.embedding_dim:
         raise ValueError("document and query embedding dimensions differ")
@@ -481,6 +647,46 @@ def build_metadata_from_chunks(
         total_query_tokens=query_chunks.total_tokens,
         max_doc_tokens=doc_chunks.max_tokens,
         max_query_tokens=query_chunks.max_tokens,
+        qrels_modes=qrels_modes or ["gold"],
+        has_excluded_ids=has_excluded_ids,
+        has_aspect_annotations=has_aspect_annotations,
+    )
+
+
+def serialize_aspect_annotations(dataset: EvalDataset) -> dict[str, Any] | None:
+    annotations = dataset.aspect_annotations
+    if annotations is None:
+        return None
+    return {
+        "query_aspect_weights": annotations.query_aspect_weights,
+        "query_doc_to_aspect": annotations.query_doc_to_aspect,
+        "query_aspect_content": annotations.query_aspect_content,
+    }
+
+
+def _subset_aspect_annotations(dataset: EvalDataset, query_ids: list[str]):
+    annotations = dataset.aspect_annotations
+    if annotations is None:
+        return None
+    from tasks._shared.datasets import AspectAnnotations
+
+    kept = set(query_ids)
+    return AspectAnnotations(
+        query_aspect_weights={
+            qid: weights
+            for qid, weights in annotations.query_aspect_weights.items()
+            if qid in kept
+        },
+        query_doc_to_aspect={
+            qid: mapping
+            for qid, mapping in annotations.query_doc_to_aspect.items()
+            if qid in kept
+        },
+        query_aspect_content={
+            qid: content
+            for qid, content in annotations.query_aspect_content.items()
+            if qid in kept
+        },
     )
 
 

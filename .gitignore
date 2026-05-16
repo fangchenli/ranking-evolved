@@ -207,6 +207,9 @@ marimo/_lsp/
 __marimo__/
 
 # Project-specific
+.DS_Store
+cache/
+datasets/
 openevolve/
 src/ranking_evolved/openevolve_output/
 output/

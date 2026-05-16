@@ -113,6 +113,14 @@ class ObjectiveConfig:
     name: str = "recall100_ndcg10"
     recall_k: int = 100
     ndcg_k: int = 10
+    # Optional evaluator-emitted metric names to optimize instead of the
+    # canonical recall@k / ndcg@k aliases. Useful for aspect-aware datasets
+    # such as BRIGHT-Pro (`aspect_recall_at_25`, `alpha_ndcg_at_25`).
+    recall_metric_key: str = ""
+    ndcg_metric_key: str = ""
+    # If an explicit key is absent for a dataset, fall back to the canonical
+    # recall/nDCG key. Set false for strict single-benchmark configs.
+    metric_key_fallback: bool = True
     weights: ObjectiveWeights = field(default_factory=ObjectiveWeights)
     latency: LatencyConfig = field(default_factory=LatencyConfig)
     aggregation: AggregationConfig = field(default_factory=AggregationConfig)

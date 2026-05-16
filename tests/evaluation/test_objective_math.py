@@ -7,8 +7,6 @@ do not depend on this objective.
 
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from ranking_evolved.config.objective import (
@@ -102,6 +100,74 @@ def test_combined_score_accepts_evaluator_metric_names():
     assert outcome.avg_ndcg == pytest.approx(0.3)
     assert outcome.objective_recall_component == pytest.approx(0.40 * 0.6)
     assert outcome.objective_ndcg_component == pytest.approx(0.20 * 0.3)
+
+
+def test_objective_metric_aliases_select_aspect_metrics():
+    cfg = ObjectiveConfig(
+        name="bright_pro_aspect_latency",
+        recall_k=25,
+        ndcg_k=25,
+        recall_metric_key="aspect_recall_at_25",
+        ndcg_metric_key="alpha_ndcg_at_25",
+        weights=ObjectiveWeights(recall=0.3, ndcg=0.7, latency=0.0),
+        latency=LatencyConfig(enabled=False),
+    )
+    per_dataset = {
+        "bright_pro_toy": {
+            "recall_at_25": 0.1,
+            "ndcg_at_25": 0.2,
+            "aspect_recall_at_25": 0.8,
+            "alpha_ndcg_at_25": 0.6,
+        }
+    }
+
+    outcome = compute_objective(per_dataset, None, cfg)
+
+    assert outcome.avg_recall == pytest.approx(0.8)
+    assert outcome.avg_ndcg == pytest.approx(0.6)
+    assert outcome.combined_score == pytest.approx(0.3 * 0.8 + 0.7 * 0.6)
+
+
+def test_objective_metric_alias_falls_back_for_classic_dataset():
+    cfg = ObjectiveConfig(
+        name="mixed_new_benchmarks",
+        recall_k=25,
+        ndcg_k=25,
+        recall_metric_key="aspect_recall_at_25",
+        ndcg_metric_key="alpha_ndcg_at_25",
+        metric_key_fallback=True,
+        weights=ObjectiveWeights(recall=0.5, ndcg=0.5, latency=0.0),
+        latency=LatencyConfig(enabled=False),
+    )
+    per_dataset = {
+        "obliq_toy": {"recall_at_25": 0.4, "ndcg_at_25": 0.2},
+        "bright_pro_toy": {
+            "recall_at_25": 0.1,
+            "ndcg_at_25": 0.1,
+            "aspect_recall_at_25": 0.8,
+            "alpha_ndcg_at_25": 0.6,
+        },
+    }
+
+    outcome = compute_objective(per_dataset, None, cfg)
+
+    assert outcome.avg_recall == pytest.approx((0.4 + 0.8) / 2)
+    assert outcome.avg_ndcg == pytest.approx((0.2 + 0.6) / 2)
+
+
+def test_objective_metric_alias_can_require_explicit_metric():
+    cfg = ObjectiveConfig(
+        name="strict_aspect",
+        recall_k=25,
+        ndcg_k=25,
+        recall_metric_key="aspect_recall_at_25",
+        ndcg_metric_key="alpha_ndcg_at_25",
+        metric_key_fallback=False,
+        latency=LatencyConfig(enabled=False),
+    )
+
+    with pytest.raises(ValueError, match="missing objective metric"):
+        compute_objective({"obliq_toy": {"recall_at_25": 0.4, "ndcg_at_25": 0.2}}, None, cfg)
 
 
 def test_hard_slowdown_zeroes_score_for_offending_dataset():
